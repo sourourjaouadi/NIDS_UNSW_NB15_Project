@@ -55,8 +55,6 @@ An ensemble of 600 decision trees that vote on each classification. Uses balance
 ### ⚡ XGBoost
 Gradient boosted trees with regularization and early stopping. Particularly strong on tabular data and handles imbalanced classes well.
 
-### 🧠 MLP Neural Network
-A 4-layer feedforward neural network that captures complex non-linear relationships between network features.
 
 ---
 
@@ -68,15 +66,9 @@ A 4-layer feedforward neural network that captures complex non-linear relationsh
 |---|---|---|---|---|
 | 🌲 Random Forest | **99.21%** | **99.63%** | **99.25%** | **99.81%** |
 | ⚡ XGBoost | 99.14% | 99.31% | 99.16% | 99.77% |
-| 🧠 MLP | 98.73% | 99.11% | 98.76% | 99.58% |
+|
 
-### Attack Classification (Multi-Class)
 
-| Model | Accuracy | Macro F1 |
-|---|---|---|
-| 🌲 Random Forest | **97.56%** | **96.31%** |
-| ⚡ XGBoost | 97.21% | 95.88% |
-| 🧠 MLP | 96.44% | 95.02% |
 
 > Random Forest achieves the best results across both tasks. Recall is prioritized over precision — in security, missing an attack is more costly than a false alarm.
 
