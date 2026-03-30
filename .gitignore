@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+ids_pipeline/artifacts/*.pkl
+ids_pipeline/__pycache__/
+ids_pipeline/*.pyc
