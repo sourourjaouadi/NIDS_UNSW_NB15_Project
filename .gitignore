@@ -7,3 +7,8 @@ vite.config.d.ts
 ids_pipeline/artifacts/*.pkl
 ids_pipeline/__pycache__/
 ids_pipeline/*.pyc
+
+# Datasets and Models
+data/
+models/
+pcap/

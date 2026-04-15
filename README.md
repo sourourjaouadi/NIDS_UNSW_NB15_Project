@@ -113,3 +113,20 @@ To make the models transparent and trustworthy, we apply SHAP (SHapley Additive 
 ---
 
 *P2M Project · Institut Supérieur d'Informatique · 2025–2026*
+## Local Development
+
+### Backend
+
+```powershell
+pip install -r backend/requirements.txt
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Frontend
+
+```powershell
+npm install
+npm run dev
+```
+
+The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:8000`, so the React app can upload PCAP files directly to the FastAPI backend during local development.
