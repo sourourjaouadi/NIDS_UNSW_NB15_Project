@@ -21,6 +21,8 @@ from typing import Optional
 import dpkt
 import numpy as np
 import pandas as pd
+import pickle
+from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -222,9 +224,25 @@ def extract_features_from_pcap(
         for ts, raw_buf in pcap:
             pkt_count += 1
             try:
-                eth = dpkt.ethernet.Ethernet(raw_buf)
-                ip = eth.data
-                if not isinstance(ip, dpkt.ip.IP): raise ValueError()
+                ip = None
+                try:
+                    eth = dpkt.ethernet.Ethernet(raw_buf)
+                    ip = eth.data
+                except Exception:
+                    pass
+                
+                if not isinstance(ip, dpkt.ip.IP):
+                    try:
+                        ip = dpkt.ip.IP(raw_buf)
+                    except Exception:
+                        if len(raw_buf) > 16:
+                            try:
+                                ip = dpkt.ip.IP(raw_buf[16:])
+                            except Exception:
+                                pass
+                
+                if not isinstance(ip, dpkt.ip.IP):
+                    raise ValueError(f"Unsupported packet type: {type(ip).__name__ if ip else 'None'}")
                 
                 src_ip = socket.inet_ntoa(ip.src)
                 dst_ip = socket.inet_ntoa(ip.dst)
@@ -266,17 +284,22 @@ def extract_features_from_pcap(
                     for k in expired:
                         completed_features.append(active_flows.pop(k).to_feature_dict())
 
-            except Exception:
+            except Exception as e:
                 skipped += 1
+                if skipped <= 3:
+                    logger.debug(f"Skipped packet #{pkt_count}: {type(e).__name__}: {e}")
                 continue
 
     # Flush remaining flows
     for flow in active_flows.values():
-        if (flow.spkts + flow.dpkts) >= 2: # Min packets to be useful
+        if (flow.spkts + flow.dpkts) >= 1: # Min packets to be useful
             completed_features.append(flow.to_feature_dict())
 
     if not completed_features:
-        raise RuntimeError("No valid flows found for processing.")
+        raise RuntimeError(
+            f"No valid flows found. Processed {pkt_count} packets, skipped {skipped} (likely non-IPv4 or unsupported link-layer). "
+            "Ensure your PCAP contains IPv4 traffic."
+        )
 
     # Model Compatibility Layer
     X_scaled, X_raw, df_meta = prepare_for_model(completed_features, scaler_path, feature_list, encoders)
@@ -300,20 +323,26 @@ def _make_key(pkt: dict) -> tuple:
 
 def prepare_for_model(feature_dicts, scaler_path, feature_list=None, encoders=None):
     """Convert dictionaries to scaled and raw matrices."""
-    import pickle
-    from sklearn.preprocessing import StandardScaler
-    
     if feature_list is None: feature_list = MODEL_FEATURES
     df = pd.DataFrame(feature_dicts)
     
     # ── 1. Categorical Encoding (on a copy for X) ────────────────────────
     X = df.reindex(columns=feature_list, fill_value=0)
     
+    # Convert proto number to name for encoding
+    if 'proto' in X.columns:
+        proto_map = {'6': 'tcp', '17': 'udp', '1': 'icmp', '47': 'gre', '50': 'esp', '51': 'ah', '89': 'ospf', '132': 'sctp'}
+        X['proto'] = X['proto'].astype(str).map(lambda x: proto_map.get(x, x))
+    
     if encoders:
         for col, encoder in encoders.items():
             if col in X.columns and col in ['proto', 'service', 'state']:
                 try:
-                    X[col] = encoder.transform(X[col].astype(str).str.lower())
+                    # Convert to string and match encoder's expected format
+                    X[col] = X[col].astype(str).str.upper()  # Encoder expects uppercase for state
+                    known = set(encoder.classes_)
+                    X[col] = X[col].apply(lambda x: x if x in known else encoder.classes_[0])
+                    X[col] = encoder.transform(X[col])
                 except Exception as e:
                     logger.warning(f"Encoding failed for {col}: {e}. Filling with 0.")
                     X[col] = 0

@@ -37,8 +37,8 @@ MAX_FILE_MB        = int(os.getenv("MAX_FILE_MB", 2048))
 ALLOWED_EXTENSIONS = {".pcap", ".pcapng"}
 FLOW_TIMEOUT       = float(os.getenv("FLOW_TIMEOUT", 120.0))
 
-# Model Paths
-MODEL_DIR          = "models"
+# Model Paths - use parent directory since models/ is at project root
+MODEL_DIR          = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 BINARY_MODEL_PATH  = os.path.join(MODEL_DIR, "rf_binary.pkl")
 MULTI_MODEL_PATH   = os.path.join(MODEL_DIR, "rf_multiclass.pkl")
 SCALER_PATH        = os.path.join(MODEL_DIR, "scaler.pkl")
