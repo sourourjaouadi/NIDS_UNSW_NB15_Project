@@ -59,9 +59,9 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
             <div>
               <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">PCAP Ingestion</p>
               <h2 className="mt-2 font-display text-3xl font-semibold text-white">Upload and analyze capture files</h2>
-              <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
+                <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
                 Drag packet captures directly into the platform or browse from disk. The file is validated in the UI,
-                uploaded to the FastAPI backend, and returned as extracted flow analytics with analyst-friendly detail.
+                uploaded to the backend API, and returned as extracted flow analytics with analyst-friendly detail.
               </p>
             </div>
             <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-3">
@@ -87,7 +87,7 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
               <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-4">
                 <UploadCloud className="h-8 w-8 text-cyan-300" />
               </div>
-              <h3 className="mt-6 text-2xl font-semibold text-white">Drop `.pcap` or `.pcapng` files here</h3>
+              <h3 className="mt-6 text-2xl font-semibold text-white">Drop `.pcap`, `.pcapng`, or `.csv` files here</h3>
               <p className="mt-3 max-w-md text-sm leading-7 text-slate-400">
                 Upload progress reflects the real transfer, then the backend runs parsing, flow construction, and
                 scoring before the dashboard refreshes.
@@ -109,7 +109,7 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
             <input
               ref={inputRef}
               type="file"
-              accept=".pcap,.pcapng"
+              accept=".pcap,.pcapng,.csv"
               multiple
               className="hidden"
               onChange={(event) => {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 interface FeaturesTableProps {
   featureNames: string[];
@@ -20,7 +20,7 @@ export const FeaturesTable: React.FC<FeaturesTableProps> = ({
       <div className="rounded-2xl border border-slate-800 bg-slate-900/50 backdrop-blur-xl overflow-hidden shadow-2xl">
         <div 
           className="flex items-center justify-between px-6 py-4 cursor-pointer hover:bg-slate-800/50 transition-colors"
-          onClick={() => setIsExpanded(!isExpanded)}
+          onClick={onToggle}
         >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-400">

@@ -7,7 +7,7 @@ interface UseFileUploadOptions {
   onError?: (title: string, message: string) => void;
 }
 
-const allowedExtensions = [".pcap", ".pcapng"];
+const allowedExtensions = [".pcap", ".pcapng", ".csv"];
 const maxFileSize = 2048 * 1024 * 1024; // 2GB
 
 export const useFileUpload = ({
@@ -58,12 +58,12 @@ export const useFileUpload = ({
       Array.from(incoming).forEach((file) => {
         const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
         if (!allowedExtensions.includes(extension)) {
-          onError?.("Unsupported file type", `${file.name} is not a .pcap or .pcapng capture file.`);
+          onError?.("Unsupported file type", `${file.name} is not a .pcap, .pcapng, or .csv file.`);
           return;
         }
 
         if (file.size > maxFileSize) {
-          onError?.("File too large", `${file.name} exceeds the 100 MB upload limit.`);
+          onError?.("File too large", `${file.name} exceeds the 2 GB upload limit.`);
           return;
         }
 

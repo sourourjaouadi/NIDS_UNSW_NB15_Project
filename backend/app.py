@@ -18,7 +18,11 @@ from werkzeug.utils import secure_filename
 import joblib
 import pandas as pd
 import numpy as np
-from feature_extraction import extract_features_from_pcap, MODEL_FEATURES
+
+try:
+    from .feature_extraction import extract_features_from_pcap, MODEL_FEATURES
+except ImportError:
+    from feature_extraction import extract_features_from_pcap, MODEL_FEATURES
 
 # SHAP import — used for per-feature prediction explanations
 try:
@@ -133,7 +137,7 @@ def demo():
 @app.post("/api/predict/upload")
 def analyze():
     """
-    POST /api/analyze
+    POST /api/predict/upload
     Content-Type: multipart/form-data
     Body field: file  (.pcap or .pcapng)
 
@@ -186,7 +190,7 @@ def analyze():
 
         # ── 5. Prepare Response (Truncate for performance if too large) ────
         t_ml_start = time.perf_counter()
-        predictions = _features_to_predictions(X_scaled, df_meta)
+        predictions = _features_to_predictions(X_scaled, X_raw, df_meta)
         ml_ms = round((time.perf_counter() - t_ml_start) * 1000, 1)
 
         logger.info(f"Finished: Extraction={summary['processing_ms']}ms, ML={ml_ms}ms, Flows={summary['total_flows']}")
@@ -246,7 +250,7 @@ def analyze():
 #  HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
+def _features_to_predictions(X_scaled, X_raw, df_meta) -> list[dict]:
     """Convert the model output and metadata to the structure expected by the frontend."""
     import random
     
@@ -279,6 +283,7 @@ def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
     multi_model = models.get('multi')
 
     for i, meta in enumerate(meta_records):
+        raw_row = X_raw.iloc[i] if hasattr(X_raw, "iloc") else X_raw[i]
         # 1. Prediction Logic
         if binary_model and 'scaler' in models:
             # We already have X_scaled from extract_features_from_pcap
@@ -339,12 +344,12 @@ def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
             "src_port":     int(meta.get("_src_port", 0)),
             "dst_port":     int(meta.get("_dst_port", 0)),
             "proto":        proto_name,
-            "service":      meta.get("service", "-").upper() if "service" in meta else "HTTP" if meta.get("_dst_port") == 80 else "HTTPS" if meta.get("_dst_port") == 443 else "-",
+            "service":      "HTTP" if meta.get("_dst_port") == 80 else "HTTPS" if meta.get("_dst_port") == 443 else "DNS" if meta.get("_dst_port") == 53 else "-",
             "first_seen":   datetime.datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S'),
             "last_seen":    datetime.datetime.fromtimestamp(start_time + duration).strftime('%Y-%m-%d %H:%M:%S'),
             "duration_seconds": round(float(duration), 4),
-            "packet_count": int(meta.get("spkts", 0) + meta.get("dpkts", 0)),
-            "bytes":        int(meta.get("sbytes", 0) + meta.get("dbytes", 0)),
+            "packet_count": int((raw_row.get("spkts", 0) if hasattr(raw_row, "get") else 0) + (raw_row.get("dpkts", 0) if hasattr(raw_row, "get") else 0)),
+            "bytes":        int((raw_row.get("sbytes", 0) if hasattr(raw_row, "get") else 0) + (raw_row.get("dbytes", 0) if hasattr(raw_row, "get") else 0)),
             "risk_score":   round(risk_score, 2),
             "predicted_label": label,
             "attack_family": attack_family,

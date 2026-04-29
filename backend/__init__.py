@@ -1,1 +1,1 @@
-# Backend package entrypoint for FastAPI.
+# Backend package entrypoint for Flask.
