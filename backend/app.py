@@ -20,6 +20,13 @@ import pandas as pd
 import numpy as np
 from feature_extraction import extract_features_from_pcap, MODEL_FEATURES
 
+# SHAP import — used for per-feature prediction explanations
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +57,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_MB * 1024 * 1024
 models = {}
 
 def load_models():
+    """Load ML models, scaler, encoders, and SHAP explainers at startup."""
     try:
         if all(os.path.exists(p) for p in [BINARY_MODEL_PATH, MULTI_MODEL_PATH, SCALER_PATH, ENCODERS_PATH]):
             models['binary'] = joblib.load(BINARY_MODEL_PATH)
@@ -57,6 +65,23 @@ def load_models():
             models['scaler'] = joblib.load(SCALER_PATH)
             models['encoders'] = joblib.load(ENCODERS_PATH)
             logger.info("All ML models and encoders loaded successfully.")
+
+            # ── SHAP Explainer Initialization ──────────────────────────────
+            # Build a TreeExplainer for the model used in final prediction.
+            # Currently the binary RF is the decision model; if XGBoost is
+            # introduced later, TreeExplainer handles both seamlessly.
+            if SHAP_AVAILABLE:
+                try:
+                    binary_model = models.get('binary')
+                    if binary_model is not None:
+                        models['explainer'] = shap.TreeExplainer(binary_model)
+                        logger.info("SHAP TreeExplainer initialised for binary model.")
+                    else:
+                        logger.warning("Binary model not available — SHAP explainer skipped.")
+                except Exception as e:
+                    logger.warning(f"Failed to build SHAP explainer: {e}. Explanations will be omitted.")
+            else:
+                logger.warning("shap package not installed — prediction explanations disabled.")
         else:
             logger.warning("One or more model files are missing. Running in MOCK mode.")
     except Exception as e:
@@ -229,6 +254,20 @@ def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
     meta_records = df_meta.to_dict(orient="records")
     proto_map = {1: "ICMP", 6: "TCP", 17: "UDP"}
     
+    # ── SHAP: compute explanations for ALL flows in one batch ─────────────
+    # TreeExplainer accepts a 2-D array; running it once is far faster than
+    # calling explainer() inside the per-flow loop.
+    shap_values_all = None
+    feature_names = MODEL_FEATURES
+    explainer = models.get('explainer')
+    if explainer is not None and len(X_scaled) > 0:
+        try:
+            shap_output = explainer(X_scaled)
+            # shap_output.values shape: (n_flows, n_features)
+            shap_values_all = shap_output.values
+        except Exception as e:
+            logger.warning(f"SHAP batch computation failed: {e}")
+
     # Load categorical encoders
     encoders = models.get('encoders', {})
     le_proto = encoders.get('proto')
@@ -285,6 +324,13 @@ def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
         
         proto_num = int(meta.get("_protocol", 0))
         proto_name = proto_map.get(proto_num, str(proto_num))
+
+        # ── SHAP: extract top 5 features for this flow ─────────────────────
+        top_shap = _extract_top_shap_features(
+            shap_values=shap_values_all,
+            row_index=i,
+            feature_names=feature_names,
+        )
         
         predictions.append({
             "flow_id":      f"flow-{i}-{uuid.uuid4().hex[:6]}",
@@ -304,9 +350,40 @@ def _features_to_predictions(X_scaled, df_meta) -> list[dict]:
             "attack_family": attack_family,
             "summary":      f"Observed {proto_name} flow from {meta.get('_src_ip')} to {meta.get('_dst_ip')}. Predicted as {label}.",
             "recommendations": ["No immediate action required."] if label == "Benign" else ["Monitor this source IP for further activity.", "Isolate host if behavior persists."],
-            "top_features": []
+            "top_features": [],
+            "shap_features": top_shap,   # NEW: per-flow SHAP explanation
         })
     return predictions
+
+
+def _extract_top_shap_features(
+    shap_values: np.ndarray | None,
+    row_index: int,
+    feature_names: list[str],
+    top_k: int = 5,
+) -> list[dict]:
+    """Return the top-k features by absolute SHAP value for a single flow.
+
+    Each entry contains:
+      - feature_name  : str  (e.g. "sbytes")
+      - feature_value : float (the raw value for this flow; None if unavailable)
+      - shap_impact   : float (positive → pushes toward attack, negative → benign)
+    """
+    if shap_values is None or row_index >= shap_values.shape[0]:
+        return []
+
+    row_shap = shap_values[row_index]
+    # Indices of the k largest absolute SHAP values
+    top_indices = np.argsort(np.abs(row_shap))[::-1][:top_k]
+
+    result = []
+    for idx in top_indices:
+        result.append({
+            "feature_name": feature_names[idx] if idx < len(feature_names) else f"feature_{idx}",
+            "feature_value": None,   # raw value unavailable after scaling; set if you pass X_raw
+            "shap_impact": round(float(row_shap[idx]), 6),
+        })
+    return result
 
 
 def _error(http_code: int, code: str, message: str):
