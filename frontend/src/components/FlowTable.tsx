@@ -21,6 +21,44 @@ interface FlowTableProps {
   onExport: () => void;
 }
 
+const attackColorMap: Record<string, string> = {
+  Fuzzers: "bg-cyan-400 text-cyan-950",
+  DoS: "bg-rose-500 text-white",
+  Exploits: "bg-orange-400 text-orange-950",
+  Reconnaissance: "bg-yellow-300 text-yellow-950",
+  Generic: "bg-violet-400 text-violet-950",
+  Backdoors: "bg-fuchsia-400 text-fuchsia-950",
+  Shellcode: "bg-orange-500 text-white",
+  Worms: "bg-lime-400 text-lime-950",
+  Analysis: "bg-teal-300 text-teal-950"
+};
+
+const attackBarMap: Record<string, string> = {
+  Fuzzers: "from-cyan-400 to-cyan-200",
+  DoS: "from-rose-500 to-rose-300",
+  Exploits: "from-orange-400 to-amber-300",
+  Reconnaissance: "from-yellow-300 to-yellow-100",
+  Generic: "from-violet-400 to-violet-200",
+  Backdoors: "from-fuchsia-400 to-fuchsia-200",
+  Shellcode: "from-orange-500 to-rose-400",
+  Worms: "from-lime-400 to-lime-200",
+  Analysis: "from-teal-300 to-teal-100"
+};
+
+const normalizeAttackCategory = (value: string) => {
+  const v = value.trim().toLowerCase();
+  if (v === "backdoor" || v === "backdoors") return "Backdoors";
+  if (v === "dos") return "DoS";
+  if (v === "reconnaissance") return "Reconnaissance";
+  if (v === "fuzzers") return "Fuzzers";
+  if (v === "analysis") return "Analysis";
+  if (v === "exploits") return "Exploits";
+  if (v === "generic") return "Generic";
+  if (v === "shellcode") return "Shellcode";
+  if (v === "worms") return "Worms";
+  return value;
+};
+
 const columns: Array<{ label: string; key: SortKey }> = [
   { label: "Flow ID", key: "id" },
   { label: "Source IP", key: "sourceIp" },
@@ -180,9 +218,30 @@ export const FlowTable = ({ flows, selectedFlowId, onSelectFlow, onExport }: Flo
                     <td className="px-4 py-4 text-sm text-slate-300">{formatBytes(flow.bytes)}</td>
                     <td className="px-4 py-4 text-sm text-slate-300">{formatDuration(flow.duration)}</td>
                     <td className="px-4 py-4">
-                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${predictionStyles[flow.prediction].badge}`}>
-                        {flow.prediction}
-                      </span>
+                      <div className="space-y-2">
+                        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${predictionStyles[flow.prediction].badge}`}>
+                          {flow.prediction}
+                        </span>
+                        {flow.prediction !== "Benign" && (
+                          <>
+                            <span
+                              className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+                                attackColorMap[normalizeAttackCategory(flow.attackFamily)] || "bg-slate-400 text-slate-950"
+                              }`}
+                            >
+                              {normalizeAttackCategory(flow.attackFamily) || "Attack"}
+                            </span>
+                            <div className="h-1.5 w-28 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className={`h-full rounded-full bg-gradient-to-r ${
+                                  attackBarMap[normalizeAttackCategory(flow.attackFamily)] || "from-slate-400 to-slate-200"
+                                }`}
+                                style={{ width: `${Math.max(0, Math.min(100, flow.confidence))}%` }}
+                              />
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </motion.tr>
                 ))}

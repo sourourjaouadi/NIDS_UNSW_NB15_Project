@@ -19,14 +19,21 @@ const buildReply = (prompt: string, flow: FlowRecord) => {
   const normalized = prompt.toLowerCase();
   const topFeature = flow.shapFeatures[0];
   const secondFeature = flow.shapFeatures[1];
+  const hasShap = flow.shapFeatures.length > 0;
 
   if (normalized.includes("why") || normalized.includes("flag")) {
+    if (!hasShap) {
+      return `${flow.id} was marked ${flow.prediction.toLowerCase()} based on the model risk score and extracted traffic profile. Detailed feature drivers are not available for this flow yet.`;
+    }
     return `${flow.id} was marked ${flow.prediction.toLowerCase()} because ${topFeature.plainEnglish} ${
       secondFeature ? secondFeature.plainEnglish : ""
     }`.trim();
   }
 
   if (normalized.includes("shap") || normalized.includes("feature")) {
+    if (!hasShap) {
+      return `Detailed SHAP feature drivers are not available for ${flow.id} yet. The model still used extracted protocol, timing, and traffic-volume signals to compute the prediction.`;
+    }
     return `The strongest model signals for ${flow.id} are ${flow.shapFeatures
       .slice(0, 3)
       .map((feature) => `${feature.name} (${feature.rawValue})`)

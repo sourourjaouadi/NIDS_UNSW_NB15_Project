@@ -10,7 +10,7 @@ interface HeroSectionProps {
 }
 
 const heroBadges = [
-  "FastAPI upload pipeline",
+  "Backend upload pipeline",
   "Per-flow threat triage",
   "Analyst-ready explanations"
 ];
@@ -42,7 +42,7 @@ export const HeroSection = ({
             className="inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-200 shadow-glow"
           >
             <Sparkles className="h-4 w-4" />
-            {backendOnline ? "Frontend connected to the FastAPI pipeline" : "Frontend ready for backend connection"}
+            {backendOnline ? "Frontend connected to the backend pipeline" : "Frontend ready for backend connection"}
           </motion.div>
 
           <motion.h1

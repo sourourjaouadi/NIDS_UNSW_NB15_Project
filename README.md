@@ -119,7 +119,7 @@ To make the models transparent and trustworthy, we apply SHAP (SHapley Additive 
 
 ```powershell
 pip install -r backend/requirements.txt
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+python -m flask --app backend.app run --host 0.0.0.0 --port 5000
 ```
 
 ### Frontend
@@ -129,4 +129,4 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:8000`, so the React app can upload PCAP files directly to the FastAPI backend during local development.
+The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:5000`, so the React app can upload PCAP files directly to the Flask backend during local development.
