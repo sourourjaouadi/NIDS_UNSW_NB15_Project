@@ -8,6 +8,8 @@ export interface ApiFeatureDriver {
 }
 
 export interface ApiPrediction {
+  flow_index?: number;
+  features?: Record<string, number>;
   flow_id: string;
   src_ip: string;
   dst_ip: string;
@@ -23,12 +25,30 @@ export interface ApiPrediction {
   risk_score: number;
   predicted_label: string;
   attack_family: string;
+  binary_prediction?: string;
+  binary_confidence?: number;
+  multiclass_prediction?: string;
+  multiclass_confidence?: number | null;
+  rf?: {
+    binary_prediction: string;
+    binary_confidence: number;
+    multiclass_prediction: string;
+    multiclass_confidence: number | null;
+  };
+  xgb?: {
+    binary_prediction: string;
+    binary_confidence: number;
+    multiclass_prediction: string;
+    multiclass_confidence: number | null;
+  } | null;
+  models_agree?: boolean;
   summary: string;
   recommendations: string[];
   top_features: ApiFeatureDriver[];
 }
 
 export interface ApiAnalysisResponse {
+  session_id?: string;
   source: string;
   generated_at: string;
   packet_count: number;
@@ -100,6 +120,9 @@ export const mapAnalysisToFlows = (analysis: ApiAnalysisResponse, sourceLabel: s
 
     return {
       id: `${idPrefix}-${prediction.flow_id}-${index}`,
+      sessionId: analysis.session_id,
+      sessionSource: analysis.source || sourceLabel,
+      flowIndex: prediction.flow_index ?? index,
       sourceIp: prediction.src_ip,
       destIp: prediction.dst_ip,
       protocol: prediction.proto.toUpperCase(),
@@ -114,6 +137,16 @@ export const mapAnalysisToFlows = (analysis: ApiAnalysisResponse, sourceLabel: s
       recommendations: prediction.recommendations,
       rawFeatures: rawFeaturesObj,
       scaledFeatures: scaledFeaturesObj,
+      /* ── XGB DUAL MODEL START ── */
+      rf: prediction.rf ?? {
+        binary_prediction: prediction.binary_prediction ?? (prediction.predicted_label === "Benign" ? "Normal" : "Attack"),
+        binary_confidence: prediction.binary_confidence ?? prediction.risk_score,
+        multiclass_prediction: prediction.multiclass_prediction ?? prediction.attack_family,
+        multiclass_confidence: prediction.multiclass_confidence ?? null
+      },
+      xgb: prediction.xgb ?? null,
+      modelsAgree: prediction.models_agree,
+      /* ── XGB DUAL MODEL END ── */
       shapFeatures: prediction.top_features.map((feature) => ({
         name: feature.name,
         rawValue: feature.raw_value,

@@ -14,6 +14,10 @@ type SortKey =
   | "duration"
   | "prediction";
 
+/* ── XGB DUAL MODEL START ── */
+type ModelView = "rf" | "xgb" | "compare";
+/* ── XGB DUAL MODEL END ── */
+
 interface FlowTableProps {
   flows: FlowRecord[];
   selectedFlowId?: string;
@@ -59,6 +63,27 @@ const normalizeAttackCategory = (value: string) => {
   return value;
 };
 
+/* ── XGB DUAL MODEL START ── */
+const confidencePct = (value?: number | null) => Math.round(((value ?? 0) <= 1 ? (value ?? 0) * 100 : value ?? 0));
+
+const displayModel = (flow: FlowRecord, model: "rf" | "xgb") => {
+  const result = model === "rf" ? flow.rf : flow.xgb;
+  if (!result) {
+    return null;
+  }
+
+  return {
+    binary: result.binary_prediction,
+    binaryConfidence: confidencePct(result.binary_confidence),
+    attackType: normalizeAttackCategory(result.multiclass_prediction || "Normal"),
+    attackConfidence: confidencePct(result.multiclass_confidence ?? result.binary_confidence)
+  };
+};
+
+const explainUrl = (flow: FlowRecord, model: "rf" | "xgb") =>
+  flow.sessionId && flow.flowIndex !== undefined ? `/api/explain/${flow.sessionId}/${flow.flowIndex}?model=${model}` : "";
+/* ── XGB DUAL MODEL END ── */
+
 const columns: Array<{ label: string; key: SortKey }> = [
   { label: "Flow ID", key: "id" },
   { label: "Source IP", key: "sourceIp" },
@@ -77,6 +102,12 @@ export const FlowTable = ({ flows, selectedFlowId, onSelectFlow, onExport }: Flo
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const protocols = useMemo(() => ["All", ...Array.from(new Set(flows.map((flow) => flow.protocol)))], [flows]);
   const [protocolFilter, setProtocolFilter] = useState("All");
+  /* ── XGB DUAL MODEL START ── */
+  const [modelView, setModelView] = useState<ModelView>("compare");
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const hasXgbGap = flows.some((flow) => !flow.xgb);
+  const showXgbNotice = flows.length > 0 && hasXgbGap && !noticeDismissed;
+  /* ── XGB DUAL MODEL END ── */
 
   const filteredFlows = useMemo(() => {
     const query = search.toLowerCase().trim();
@@ -176,7 +207,124 @@ export const FlowTable = ({ flows, selectedFlowId, onSelectFlow, onExport }: Flo
           </select>
         </div>
 
-        <div className="mt-8 overflow-hidden rounded-[24px] border border-white/8 bg-[#0B1320]/80">
+        {/* ── XGB DUAL MODEL START ── */}
+        <div className="mt-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="inline-flex w-fit rounded-full border border-cyan-400/20 bg-[#0B1320]/80 p-1">
+            {[
+              ["rf", "ðŸŒ² Random Forest"],
+              ["xgb", "âš¡ XGBoost"],
+              ["compare", "âš– Compare"]
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setModelView(key as ModelView)}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  modelView === key
+                    ? "bg-cyan-400/20 text-cyan-100 shadow-[0_0_22px_rgba(34,211,238,0.25)]"
+                    : "text-slate-400 hover:text-cyan-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {showXgbNotice && (
+            <div className="flex items-center gap-3 rounded-full border border-amber-300/25 bg-amber-300/10 px-4 py-2 text-sm text-amber-100">
+              <span>XGBoost results unavailable for this session</span>
+              <button type="button" onClick={() => setNoticeDismissed(true)} className="text-amber-200 hover:text-white">
+                Dismiss
+              </button>
+            </div>
+          )}
+        </div>
+
+        {modelView === "compare" && (
+          <div className="mt-8 grid gap-4">
+            {filteredFlows.map((flow, index) => {
+              const rf = displayModel(flow, "rf");
+              const xgb = displayModel(flow, "xgb");
+              const agreeText = flow.modelsAgree
+                ? `âœ… Models Agree â†’ ${rf?.attackType || flow.attackFamily}`
+                : `âš ï¸ Models Disagree: RF=${rf?.attackType || "Unknown"} | XGB=${xgb?.attackType || "Unavailable"}`;
+
+              return (
+                <div key={`compare-${flow.id}`} className="rounded-2xl border border-white/10 bg-[#0B1320]/80 p-5">
+                  <div className="flex flex-col gap-2 border-b border-white/8 pb-4 sm:flex-row sm:items-center sm:justify-between">
+                    <h3 className="text-base font-semibold text-white">Flow #{String(index + 1).padStart(2, "0")}</h3>
+                    <p className="text-sm text-slate-300">
+                      {flow.sourceIp} â†’ {flow.destIp}
+                    </p>
+                  </div>
+
+                  <div className={`grid gap-4 py-4 ${xgb ? "lg:grid-cols-2" : "lg:grid-cols-1"}`}>
+                    {(["rf", "xgb"] as const).map((model) => {
+                      const detail = displayModel(flow, model);
+                      if (!detail) {
+                        return null;
+                      }
+
+                      return (
+                        <div key={model} className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
+                          <p className="text-sm font-semibold text-cyan-200">{model === "rf" ? "ðŸŒ² Random Forest" : "âš¡ XGBoost"}</p>
+                          <div className="mt-3 space-y-2 text-sm text-slate-200">
+                            <p>
+                              Binary: <span className="font-bold text-white">{detail.binary.toUpperCase()}</span> {detail.binaryConfidence}%
+                            </p>
+                            <p>
+                              Type:{" "}
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                  attackColorMap[detail.attackType] || "bg-slate-400 text-slate-950"
+                                }`}
+                              >
+                                {detail.attackType}
+                              </span>{" "}
+                              {detail.attackConfidence}%
+                            </p>
+                            <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className={`h-full rounded-full bg-gradient-to-r ${
+                                  attackBarMap[detail.attackType] || "from-cyan-400 to-cyan-200"
+                                }`}
+                                style={{ width: `${Math.max(0, Math.min(100, detail.binaryConfidence))}%` }}
+                              />
+                            </div>
+                            {explainUrl(flow, model) && (
+                              <button
+                                type="button"
+                                onClick={() => window.open(explainUrl(flow, model), "_blank", "noopener,noreferrer")}
+                                className="mt-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:border-cyan-300/50"
+                              >
+                                Explain {model.toUpperCase()} â–¸
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {xgb && (
+                    <div
+                      className={`rounded-xl border px-4 py-3 text-sm font-semibold ${
+                        flow.modelsAgree
+                          ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+                          : "border-yellow-300/25 bg-yellow-300/10 text-yellow-100"
+                      }`}
+                    >
+                      {agreeText}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {/* ── XGB DUAL MODEL END ── */}
+
+        <div className={`${modelView === "compare" ? "mt-8" : "mt-8"} overflow-hidden rounded-[24px] border border-white/8 bg-[#0B1320]/80`}>
           <div className="overflow-x-auto">
             <table className="min-w-full text-left">
               <thead className="border-b border-white/8 bg-white/[0.03]">

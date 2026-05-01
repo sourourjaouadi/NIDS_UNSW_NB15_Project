@@ -22,7 +22,6 @@ import dpkt
 import numpy as np
 import pandas as pd
 import pickle
-from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -34,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 TCP_FIN, TCP_SYN, TCP_RST, TCP_PSH, TCP_ACK, TCP_URG = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
 
-MODEL_FEATURES = [
+# ── INFERENCE FIX START ──
+FEATURE_COLUMNS = [
     'sport', 'dsport', 'proto', 'state', 'dur', 'sbytes', 'dbytes', 
     'sttl', 'dttl', 'service', 'sload', 'dload', 'spkts', 'dpkts', 
     'dwin', 'stcpb', 'dtcpb', 'trans_depth', 'res_bdy_len', 'sjit', 
@@ -43,6 +43,8 @@ MODEL_FEATURES = [
     'ct_ftp_cmd', 'ct_srv_src', 'ct_srv_dst', 'ct_dst_ltm', 'ct_src_ltm', 
     'ct_src_dport_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm'
 ]
+MODEL_FEATURES = FEATURE_COLUMNS
+# ── INFERENCE FIX END ──
 
 
 class RunningStats:
@@ -323,11 +325,17 @@ def _make_key(pkt: dict) -> tuple:
 
 def prepare_for_model(feature_dicts, scaler_path, feature_list=None, encoders=None):
     """Convert dictionaries to scaled and raw matrices."""
-    if feature_list is None: feature_list = MODEL_FEATURES
-    df = pd.DataFrame(feature_dicts)
+    # ── INFERENCE FIX START ──
+    if feature_list is None:
+        feature_list = FEATURE_COLUMNS
+    assert list(feature_list) == FEATURE_COLUMNS, f"Column mismatch: {list(feature_list)}"
+
+    df_all = pd.DataFrame(feature_dicts)
+    df = df_all[FEATURE_COLUMNS].copy()
+    assert list(df.columns) == FEATURE_COLUMNS, f"Column mismatch: {list(df.columns)}"
     
     # ── 1. Categorical Encoding (on a copy for X) ────────────────────────
-    X = df.reindex(columns=feature_list, fill_value=0)
+    X = df.copy()
     
     # Convert proto number to name for encoding
     if 'proto' in X.columns:
@@ -348,21 +356,22 @@ def prepare_for_model(feature_dicts, scaler_path, feature_list=None, encoders=No
                     X[col] = 0
 
     X = X.astype(float)
-    X.replace([np.inf, -np.inf], 0, inplace=True)
-    X.fillna(0, inplace=True)
+    X = X.fillna(0)
+    X = X.replace([float('inf'), float('-inf')], 0)
+    assert not np.isnan(X.values).any(), "NaN detected in features"
+    assert not np.isinf(X.values).any(), "Inf detected in features"
+    assert list(X.columns) == FEATURE_COLUMNS, f"Column mismatch: {list(X.columns)}"
 
     X_raw = X.copy() # Store encoded but unscaled features
 
-    if os.path.exists(scaler_path):
-        with open(scaler_path, "rb") as f: scaler = pickle.load(f)
-        X_scaled = scaler.transform(X.values)
-    else:
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X.values)
-        os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
-        with open(scaler_path, "wb") as f: pickle.dump(scaler, f)
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scaler file not found: {scaler_path}")
+    with open(scaler_path, "rb") as f:
+        scaler = pickle.load(f)
+    X_scaled = scaler.transform(X[FEATURE_COLUMNS])
             
-    meta_cols = [c for c in df.columns if c.startswith("_")]
-    df_meta = df[meta_cols].copy()
+    meta_cols = [c for c in df_all.columns if c.startswith("_")]
+    df_meta = df_all[meta_cols].copy()
     
+    # ── INFERENCE FIX END ──
     return X_scaled, X_raw, df_meta

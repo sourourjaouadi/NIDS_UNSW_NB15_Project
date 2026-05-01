@@ -9,6 +9,9 @@ export interface ShapFeature {
 
 export interface FlowRecord {
   id: string;
+  sessionId?: string;
+  sessionSource?: string;
+  flowIndex?: number;
   sourceIp: string;
   destIp: string;
   protocol: string;
@@ -24,7 +27,21 @@ export interface FlowRecord {
   shapFeatures: ShapFeature[];
   rawFeatures?: Record<string, number>;
   scaledFeatures?: Record<string, number>;
+  /* ── XGB DUAL MODEL START ── */
+  rf?: ModelResult;
+  xgb?: ModelResult | null;
+  modelsAgree?: boolean;
+  /* ── XGB DUAL MODEL END ── */
 }
+
+/* ── XGB DUAL MODEL START ── */
+export interface ModelResult {
+  binary_prediction: "Normal" | "Attack" | string;
+  binary_confidence: number;
+  multiclass_prediction: string;
+  multiclass_confidence: number | null;
+}
+/* ── XGB DUAL MODEL END ── */
 
 export interface UploadedFile {
   id: string;

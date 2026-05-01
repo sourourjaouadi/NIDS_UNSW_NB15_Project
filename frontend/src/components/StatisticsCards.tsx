@@ -47,10 +47,19 @@ export const StatisticsCards = ({ flows }: StatisticsCardsProps) => {
   const malicious = flows.filter((flow) => flow.prediction === "Malicious").length;
   const suspicious = flows.filter((flow) => flow.prediction === "Suspicious").length;
   const benign = flows.filter((flow) => flow.prediction === "Benign").length;
+  /* ── XGB DUAL MODEL START ── */
+  const comparable = flows.filter((flow) => flow.xgb);
+  const agreementRate =
+    comparable.length > 0
+      ? Math.round((comparable.filter((flow) => flow.modelsAgree).length / comparable.length) * 100)
+      : 0;
+  const agreementAccent =
+    agreementRate > 90 ? "bg-emerald-500/15" : agreementRate >= 70 ? "bg-yellow-500/15" : "bg-rose-500/15";
+  /* ── XGB DUAL MODEL END ── */
 
   return (
     <section className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard
           label="Total flows"
           value={flows.length}
@@ -79,6 +88,15 @@ export const StatisticsCards = ({ flows }: StatisticsCardsProps) => {
           icon={ShieldCheck}
           accent="bg-emerald-500/15"
         />
+        {/* ── XGB DUAL MODEL START ── */}
+        <StatCard
+          label="Model agreement"
+          value={agreementRate}
+          helper={comparable.length > 0 ? "RF/XGB binary agreement rate." : "XGBoost comparison unavailable."}
+          icon={Activity}
+          accent={agreementAccent}
+        />
+        {/* ── XGB DUAL MODEL END ── */}
       </div>
     </section>
   );
