@@ -415,15 +415,29 @@ def _features_to_predictions(X_scaled, X_raw, df_meta) -> list[dict]:
     # ── XGB DUAL MODEL END ──
 
     # ── INFERENCE FIX START ──
-    print(f"[INFERENCE] Feature shape: {X_scaled.shape}")
-    print(f"[INFERENCE] NaN count: {np.isnan(X_scaled).sum()}")
-    print(f"[INFERENCE] Feature range: {X_scaled.min():.3f} to {X_scaled.max():.3f}")
-    if rf_binary_model and hasattr(rf_binary_model, "predict_proba"):
-        print(f"[INFERENCE] Binary raw probas (first 3 rows): "
-              f"{rf_binary_model.predict_proba(X_scaled[:3])}")
-    if rf_multiclass_model and hasattr(rf_multiclass_model, "predict_proba"):
-        print(f"[INFERENCE] Multiclass raw probas (first attack row): "
-              f"{rf_multiclass_model.predict_proba(X_scaled[:1])}")
+    print(f"\n[DIAGNOSTIC] Feature shape: {X_scaled.shape}")
+    print(f"[DIAGNOSTIC] Feature Columns Order: {MODEL_FEATURES}")
+    
+    # Print encoder classes
+    le_attack = _attack_encoder()
+    if le_attack and hasattr(le_attack, "classes_"):
+        print(f"[DIAGNOSTIC] Encoder Classes: {list(le_attack.classes_)}")
+
+    if len(X_scaled) > 0:
+        i = 0 # Look at first flow
+        raw_v = X_raw.iloc[i] if hasattr(X_raw, 'iloc') else X_raw[i]
+        scaled_v = X_scaled[i]
+        
+        print(f"\n[DIAGNOSTIC] Flow {i} Features:")
+        print(f"  BEFORE scaling (Raw/Encoded): {list(raw_v)}")
+        print(f"  AFTER scaling: {list(scaled_v)}")
+        
+        feat_row = scaled_v.reshape(1, -1)
+        if rf_binary_model and hasattr(rf_binary_model, "predict_proba"):
+            print(f"  Binary Model Probabilities: {rf_binary_model.predict_proba(feat_row)[0]}")
+        if rf_multiclass_model and hasattr(rf_multiclass_model, "predict_proba"):
+            print(f"  Multiclass Model Probabilities: {rf_multiclass_model.predict_proba(feat_row)[0]}")
+            print(f"  Multiclass Model Classes: {rf_multiclass_model.classes_}")
     # ── INFERENCE FIX END ──
 
     for i, meta in enumerate(meta_records):
