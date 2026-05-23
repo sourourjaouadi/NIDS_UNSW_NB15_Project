@@ -60,7 +60,7 @@ export const HeroSection = ({
             transition={{ duration: 0.7, delay: 0.16 }}
             className="mt-5 max-w-2xl text-lg leading-8 text-slate-300"
           >
-            Upload packet captures, send them to the backend pipeline, and review extracted flows with risk scores,
+            Upload flow CSVs, send them to the backend pipeline, and review scored flows with risk scores,
             feature drivers, and next-step recommendations in one dashboard.
           </motion.p>
 
@@ -75,7 +75,7 @@ export const HeroSection = ({
               onClick={onUploadClick}
               className="inline-flex items-center justify-center gap-2 rounded-full bg-cyan-400 px-6 py-3.5 text-sm font-semibold text-slate-950 transition hover:scale-[1.02] hover:bg-cyan-300"
             >
-              Upload PCAP Files
+              Upload CSV Files
               <ArrowRight className="h-4 w-4" />
             </button>
             <button
@@ -138,7 +138,7 @@ export const HeroSection = ({
                 <p className="mt-4 text-sm leading-6 text-rose-100/80">
                   {topThreat
                     ? `${topThreat.attackFamily} indicators currently lead the dashboard for ${topThreat.sourceIp}.`
-                    : "Upload a PCAP or start the backend to populate live flow detections."}
+                    : "Upload a CSV or start the backend to populate live flow detections."}
                 </p>
               </div>
 

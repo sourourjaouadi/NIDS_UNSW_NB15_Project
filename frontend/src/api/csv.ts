@@ -85,10 +85,10 @@ export const mapAnalysisToFlows = (analysis: ApiAnalysisResponse, sourceLabel: s
   return analysis.predictions.map((prediction, index) => {
     const rawVector = analysis.raw_features?.[index] ?? [];
     const scaledVector = analysis.scaled_features?.[index] ?? [];
-    
+
     const rawFeaturesObj: Record<string, number> = {};
     const scaledFeaturesObj: Record<string, number> = {};
-    
+
     analysis.feature_names.forEach((name, i) => {
       if (rawVector[i] !== undefined) {
         rawFeaturesObj[name] = rawVector[i];
@@ -129,13 +129,13 @@ export const fetchDemoAnalysis = async () => {
   return readJson<ApiAnalysisResponse>(response, "Failed to fetch demo analysis from the backend.");
 };
 
-export const uploadPcap = (file: File, onProgress?: (progress: number) => void) =>
+export const uploadCsv = (file: File, onProgress?: (progress: number) => void) =>
   new Promise<ApiAnalysisResponse>((resolve, reject) => {
     const formData = new FormData();
     formData.append("file", file);
 
     const request = new XMLHttpRequest();
-    request.open("POST", buildApiUrl("/predict/upload"));
+    request.open("POST", buildApiUrl("/analyze/csv"));
     request.responseType = "json";
 
     request.upload.onprogress = (event) => {
@@ -148,7 +148,7 @@ export const uploadPcap = (file: File, onProgress?: (progress: number) => void) 
     };
 
     request.onerror = () => {
-      reject(new Error("Network error while uploading the PCAP file."));
+      reject(new Error("Network error while uploading the CSV file."));
     };
 
     request.onload = () => {
@@ -160,7 +160,7 @@ export const uploadPcap = (file: File, onProgress?: (progress: number) => void) 
         return;
       }
 
-      reject(new Error(extractErrorMessage(payload, "The backend rejected the uploaded PCAP file.")));
+      reject(new Error(extractErrorMessage(payload, "The backend rejected the uploaded CSV file.")));
     };
 
     request.send(formData);

@@ -52,7 +52,7 @@ export const CumulativeDashboard = ({ flows, sessions, onClearHistory }: Cumulat
             <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">Cumulative Dashboard</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">All sessions combined</h2>
             <p className="mt-2 text-sm text-slate-300">
-              Every uploaded PCAP/CSV appends to this shared history until you clear it.
+              Every uploaded CSV appends to this shared history until you clear it.
             </p>
           </div>
           <button

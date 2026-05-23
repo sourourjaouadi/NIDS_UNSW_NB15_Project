@@ -30,7 +30,7 @@ export const FeaturesTable: React.FC<FeaturesTableProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-semibold text-slate-100">Intermediate Extraction Results</h3>
-              <p className="text-sm text-slate-400">Raw features extracted from PCAP before model processing</p>
+              <p className="text-sm text-slate-400">Raw CSV flow features before model processing</p>
             </div>
           </div>
           <button className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors">
@@ -84,7 +84,7 @@ export const FeaturesTable: React.FC<FeaturesTableProps> = ({
                   </svg>
                 </div>
                 <h4 className="text-slate-300 font-medium text-lg">No extraction data yet</h4>
-                <p className="text-slate-500 mt-1 max-w-xs mx-auto">Upload a PCAP file above to see the raw features extracted by the backend before they are sent to the AI models.</p>
+                <p className="text-slate-500 mt-1 max-w-xs mx-auto">Upload a CSV file above to see the raw features prepared by the backend before they are sent to the AI models.</p>
               </div>
             )}
             {hasData && (

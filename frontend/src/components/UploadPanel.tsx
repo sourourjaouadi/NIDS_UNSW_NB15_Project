@@ -1,7 +1,6 @@
 import { motion } from "framer-motion";
 import {
   CheckCircle2,
-  FileArchive,
   FileText,
   LoaderCircle,
   TriangleAlert,
@@ -57,11 +56,11 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
         <div className="rounded-[28px] border border-white/10 bg-white/5 p-6 shadow-soft backdrop-blur-xl">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">PCAP Ingestion</p>
-              <h2 className="mt-2 font-display text-3xl font-semibold text-white">Upload and analyze capture files</h2>
+              <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">CSV Ingestion</p>
+              <h2 className="mt-2 font-display text-3xl font-semibold text-white">Upload and analyze flow files</h2>
                 <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300">
-                Drag packet captures directly into the platform or browse from disk. The file is validated in the UI,
-                uploaded to the backend API, and returned as extracted flow analytics with analyst-friendly detail.
+                Drag CICFlowMeter CSV files directly into the platform or browse from disk. Each row is validated,
+                scaled, scored, and returned as flow analytics with analyst-friendly detail.
               </p>
             </div>
             <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-3">
@@ -87,10 +86,9 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
               <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-4">
                 <UploadCloud className="h-8 w-8 text-cyan-300" />
               </div>
-              <h3 className="mt-6 text-2xl font-semibold text-white">Drop `.pcap`, `.pcapng`, or `.csv` files here</h3>
+              <h3 className="mt-6 text-2xl font-semibold text-white">Drop `.csv` files here</h3>
               <p className="mt-3 max-w-md text-sm leading-7 text-slate-400">
-                Upload progress reflects the real transfer, then the backend runs parsing, flow construction, and
-                scoring before the dashboard refreshes.
+                CICFlowMeter CSV - one row per network flow, 38 feature columns.
               </p>
               <div className="mt-7 flex flex-col gap-3 sm:flex-row">
                 <button
@@ -109,7 +107,7 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
             <input
               ref={inputRef}
               type="file"
-              accept=".pcap,.pcapng,.csv"
+              accept=".csv"
               multiple
               className="hidden"
               onChange={(event) => {
@@ -126,7 +124,7 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm uppercase tracking-[0.22em] text-cyan-300">Upload Queue</p>
-              <h3 className="mt-2 text-2xl font-semibold text-white">Captured files</h3>
+              <h3 className="mt-2 text-2xl font-semibold text-white">CSV files</h3>
             </div>
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-slate-300">
               {files.length} file{files.length === 1 ? "" : "s"}
@@ -136,7 +134,6 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
           <div className="mt-6 space-y-4">
             {files.map((file) => {
               const StatusIcon = statusMap[file.status].icon;
-              const FileIcon = file.extension === "pcapng" ? FileText : FileArchive;
 
               return (
                 <motion.div
@@ -147,7 +144,7 @@ export const UploadPanel = ({ files, onFilesSelected }: UploadPanelProps) => {
                 >
                   <div className="flex items-start gap-4">
                     <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/10 p-3">
-                      <FileIcon className="h-5 w-5 text-cyan-300" />
+                      <FileText className="h-5 w-5 text-cyan-300" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-start justify-between gap-3">

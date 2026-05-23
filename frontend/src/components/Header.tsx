@@ -58,7 +58,7 @@ export const Header = ({ onUploadClick, backendOnline }: HeaderProps) => {
             onClick={onUploadClick}
             className="rounded-full bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:scale-[1.02] hover:bg-cyan-300"
           >
-            Upload PCAP Files
+            Upload CSV Files
           </button>
         </div>
 
@@ -99,7 +99,7 @@ export const Header = ({ onUploadClick, backendOnline }: HeaderProps) => {
                 }}
                 className="rounded-2xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-slate-950"
               >
-                Upload PCAP Files
+                Upload CSV Files
               </button>
             </div>
           </motion.div>

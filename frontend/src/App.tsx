@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { mapAnalysisToFlows, uploadPcap } from "./api/pcap";
+import { mapAnalysisToFlows, uploadCsv } from "./api/csv";
 import { AmbientBackground } from "./components/AmbientBackground";
 import { ChartsSection } from "./components/ChartsSection";
 import { Chatbot } from "./components/Chatbot";
@@ -26,83 +26,6 @@ interface SessionSummary {
   uploadedAt: string;
 }
 
-const parseCsvLine = (line: string) => {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      result.push(current);
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-
-  result.push(current);
-  return result.map((v) => v.trim());
-};
-
-const parseCsvToFlows = async (file: File): Promise<FlowRecord[]> => {
-  const text = await file.text();
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (lines.length < 2) {
-    return [];
-  }
-
-  const headers = parseCsvLine(lines[0]).map((h) => h.toLowerCase());
-  const idx = (name: string) => headers.indexOf(name.toLowerCase());
-  const iFlowId = idx("flow id");
-  const iSource = idx("source ip");
-  const iDest = idx("destination ip");
-  const iProto = idx("protocol");
-  const iPackets = idx("packet count");
-  const iBytes = idx("bytes");
-  const iDuration = idx("duration seconds");
-  const iPrediction = idx("prediction");
-  const iAttack = idx("attack family");
-  const iConfidence = idx("confidence");
-
-  return lines.slice(1).map((line, rowIndex) => {
-    const row = parseCsvLine(line);
-    const predictionRaw = (iPrediction >= 0 ? row[iPrediction] : "Suspicious") || "Suspicious";
-    const prediction =
-      predictionRaw === "Benign" || predictionRaw === "Malicious" || predictionRaw === "Suspicious"
-        ? predictionRaw
-        : "Suspicious";
-
-    return {
-      id: (iFlowId >= 0 ? row[iFlowId] : "") || `csv-flow-${rowIndex + 1}`,
-      sourceIp: (iSource >= 0 ? row[iSource] : "") || "0.0.0.0",
-      destIp: (iDest >= 0 ? row[iDest] : "") || "0.0.0.0",
-      protocol: ((iProto >= 0 ? row[iProto] : "") || "UNK").toUpperCase(),
-      packetCount: Number(iPackets >= 0 ? row[iPackets] : 0) || 0,
-      bytes: Number(iBytes >= 0 ? row[iBytes] : 0) || 0,
-      duration: Number(iDuration >= 0 ? row[iDuration] : 0) || 0,
-      prediction,
-      attackFamily: (iAttack >= 0 ? row[iAttack] : "") || (prediction === "Benign" ? "Normal" : "Unknown"),
-      timestamp: new Date().toISOString(),
-      confidence: Number(iConfidence >= 0 ? row[iConfidence] : 50) || 50,
-      summary: "Loaded from CSV session file.",
-      recommendations: prediction === "Benign" ? ["No action required."] : ["Review flow details and investigate source host."],
-      shapFeatures: []
-    };
-  });
-};
-
 function App() {
   const uploadRef = useRef<HTMLDivElement | null>(null);
   const flowsRef = useRef<HTMLDivElement | null>(null);
@@ -124,27 +47,16 @@ function App() {
       });
 
       try {
-        const ext = file.name.split(".").pop()?.toLowerCase();
-        let mappedFlows: FlowRecord[] = [];
-        let flowCount = 0;
+        const analysis = await uploadCsv(file, (progress) => {
+          setFileProgress(queuedFile.id, progress, progress >= 100 ? "analyzing" : "uploading");
+        });
 
-        if (ext === "csv") {
-          setFileProgress(queuedFile.id, 100, "analyzing");
-          mappedFlows = await parseCsvToFlows(file);
-          flowCount = mappedFlows.length;
-        } else {
-          const analysis = await uploadPcap(file, (progress) => {
-            setFileProgress(queuedFile.id, progress, progress >= 100 ? "analyzing" : "uploading");
-          });
+        const mappedFlows = mapAnalysisToFlows(analysis, file.name);
+        const flowCount = analysis.flow_count;
+        setExtractionResults({ names: analysis.feature_names || [], data: analysis.raw_features || [] });
+        setFeaturesExpanded(true);
 
-          mappedFlows = mapAnalysisToFlows(analysis, file.name);
-          flowCount = analysis.flow_count;
-          setExtractionResults({ names: analysis.feature_names || [], data: analysis.raw_features || [] });
-          setFeaturesExpanded(true); // Auto-expand on success
-          
-          // Auto-scroll after a short delay to allow rendering
-          setTimeout(() => extractionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
-        }
+        setTimeout(() => extractionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
 
         setFlows((current) => [...mappedFlows, ...current]);
         setSessions((current) => [
