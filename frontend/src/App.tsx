@@ -4,6 +4,7 @@ import { AmbientBackground } from "./components/AmbientBackground";
 import { ChartsSection } from "./components/ChartsSection";
 import { Chatbot } from "./components/Chatbot";
 import { FlowTable } from "./components/FlowTable";
+import { FlowDetailDrawer } from "./components/FlowDetailDrawer";
 import { Footer } from "./components/Footer";
 import { Header } from "./components/Header";
 import { HeroSection } from "./components/HeroSection";
@@ -162,6 +163,17 @@ function App() {
       </main>
 
       <Footer />
+      <FlowDetailDrawer
+        flow={selectedFlow}
+        onClose={() => setSelectedFlow(null)}
+        onCopy={(message) =>
+          pushToast({
+            title: "Copied",
+            message,
+            tone: "success"
+          })
+        }
+      />
       <Chatbot flows={flows} selectedFlow={selectedFlow} />
     </div>
   );

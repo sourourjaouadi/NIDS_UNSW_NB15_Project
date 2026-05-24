@@ -53,17 +53,16 @@ const ChartTooltip = ({
 
 export const ChartsSection = ({ flows }: ChartsSectionProps) => {
   const classDistribution = [
-    { label: "Benign", value: flows.filter((flow) => flow.prediction === "Benign").length, fill: "#22C55E" },
-    { label: "Suspicious", value: flows.filter((flow) => flow.prediction === "Suspicious").length, fill: "#F59E0B" },
-    { label: "Malicious", value: flows.filter((flow) => flow.prediction === "Malicious").length, fill: "#F43F5E" }
+    { label: "Normal", value: flows.filter((flow) => flow.prediction === "Normal").length, fill: "#22C55E" },
+    { label: "Attack", value: flows.filter((flow) => flow.prediction === "Attack").length, fill: "#F43F5E" }
   ];
 
   const attackTimeline = useMemo(() => {
     if (!flows.length) {
-      return [{ label: "No data", benign: 0, suspicious: 0, malicious: 0 }];
+      return [{ label: "No data", normal: 0, attack: 0 }];
     }
 
-    const grouped = new Map<string, { label: string; benign: number; suspicious: number; malicious: number; sortKey: number }>();
+    const grouped = new Map<string, { label: string; normal: number; attack: number; sortKey: number }>();
 
     [...flows]
       .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
@@ -73,7 +72,7 @@ export const ChartsSection = ({ flows }: ChartsSectionProps) => {
         const sortKey = Number.isNaN(time.getTime()) ? Number.MAX_SAFE_INTEGER : time.getTime();
 
         if (!grouped.has(label)) {
-          grouped.set(label, { label, benign: 0, suspicious: 0, malicious: 0, sortKey });
+          grouped.set(label, { label, normal: 0, attack: 0, sortKey });
         }
 
         const entry = grouped.get(label);
@@ -81,12 +80,10 @@ export const ChartsSection = ({ flows }: ChartsSectionProps) => {
           return;
         }
 
-        if (flow.prediction === "Benign") {
-          entry.benign += 1;
-        } else if (flow.prediction === "Suspicious") {
-          entry.suspicious += 1;
+        if (flow.prediction === "Normal") {
+          entry.normal += 1;
         } else {
-          entry.malicious += 1;
+          entry.attack += 1;
         }
       });
 
@@ -122,13 +119,13 @@ export const ChartsSection = ({ flows }: ChartsSectionProps) => {
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={attackTimeline}>
                 <defs>
-                  <linearGradient id="maliciousFill" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="attackFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#F43F5E" stopOpacity={0.45} />
                     <stop offset="95%" stopColor="#F43F5E" stopOpacity={0.05} />
                   </linearGradient>
-                  <linearGradient id="suspiciousFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#F59E0B" stopOpacity={0.03} />
+                  <linearGradient id="normalFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#22C55E" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#22C55E" stopOpacity={0.03} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
@@ -138,18 +135,18 @@ export const ChartsSection = ({ flows }: ChartsSectionProps) => {
                 <Legend wrapperStyle={{ color: "#CBD5E1", fontSize: "12px" }} />
                 <Area
                   type="monotone"
-                  dataKey="malicious"
-                  name="Malicious"
+                  dataKey="attack"
+                  name="Attack"
                   stroke="#F43F5E"
-                  fill="url(#maliciousFill)"
+                  fill="url(#attackFill)"
                   strokeWidth={2.5}
                 />
                 <Area
                   type="monotone"
-                  dataKey="suspicious"
-                  name="Suspicious"
-                  stroke="#F59E0B"
-                  fill="url(#suspiciousFill)"
+                  dataKey="normal"
+                  name="Normal"
+                  stroke="#22C55E"
+                  fill="url(#normalFill)"
                   strokeWidth={2.2}
                 />
               </AreaChart>

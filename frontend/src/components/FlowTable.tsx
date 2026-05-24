@@ -158,9 +158,8 @@ export const FlowTable = ({ flows, selectedFlowId, onSelectFlow, onExport }: Flo
             className="rounded-2xl border border-white/10 bg-[#0B1320]/80 px-4 py-3 text-sm text-slate-200 outline-none focus:border-cyan-300/45"
           >
             <option value="All">All predictions</option>
-            <option value="Benign">Benign</option>
-            <option value="Suspicious">Suspicious</option>
-            <option value="Malicious">Malicious</option>
+            <option value="Normal">Normal</option>
+            <option value="Attack">Attack</option>
           </select>
 
           <select
@@ -222,7 +221,7 @@ export const FlowTable = ({ flows, selectedFlowId, onSelectFlow, onExport }: Flo
                         <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${predictionStyles[flow.prediction].badge}`}>
                           {flow.prediction}
                         </span>
-                        {flow.prediction !== "Benign" && (
+                        {flow.prediction === "Attack" && (
                           <>
                             <span
                               className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${

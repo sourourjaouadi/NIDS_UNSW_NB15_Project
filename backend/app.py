@@ -1,77 +1,108 @@
 """
-Flask backend — receives PCAP uploads, runs feature extraction,
-and returns the feature matrix + metadata as JSON.
+Flask backend for CSV-only network flow analysis.
 """
 
+from __future__ import annotations
+
+import datetime
+import json
+import logging
 import os
 import time
 import uuid
-import logging
-import datetime
-import tempfile
+from collections import Counter
 from pathlib import Path
 
-from flask import Flask, request, jsonify
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
-from werkzeug.utils import secure_filename
-
 import joblib
 import pandas as pd
-import numpy as np
 
 try:
-    from .feature_extraction import extract_features_from_pcap, MODEL_FEATURES
+    from .explainer import get_explainer
+    from .feature_extraction import (
+        MODEL_FEATURES,
+        parse_csv_to_feature_rows,
+        prepare_for_model,
+    )
 except ImportError:
-    from feature_extraction import extract_features_from_pcap, MODEL_FEATURES
+    from explainer import get_explainer
+    from feature_extraction import (
+        MODEL_FEATURES,
+        parse_csv_to_feature_rows,
+        prepare_for_model,
+    )
 
-# ── Logging ────────────────────────────────────────────────────────────────────
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    format="%(asctime)s  %(levelname)-8s  %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ── App factory ────────────────────────────────────────────────────────────────
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-CORS(app, resources={r"/api/*": {"origins": "*"}})   # tighten in production
+MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", 2048))
+ALLOWED_EXTENSIONS = {".csv"}
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-MAX_FILE_MB        = int(os.getenv("MAX_FILE_MB", 2048))
-ALLOWED_EXTENSIONS = {".pcap", ".pcapng"}
-FLOW_TIMEOUT       = float(os.getenv("FLOW_TIMEOUT", 120.0))
-
-# Model Paths - use parent directory since models/ is at project root
-MODEL_DIR          = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-BINARY_MODEL_PATH  = os.path.join(MODEL_DIR, "rf_binary.pkl")
-MULTI_MODEL_PATH   = os.path.join(MODEL_DIR, "rf_multiclass.pkl")
-SCALER_PATH        = os.path.join(MODEL_DIR, "scaler.pkl")
-ENCODERS_PATH      = os.path.join(MODEL_DIR, "encoders.pkl")
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+BINARY_MODEL_PATH = os.path.join(MODEL_DIR, "rf_binary.pkl")
+MULTI_MODEL_PATH = os.path.join(MODEL_DIR, "rf_multiclass_tuned.pkl")
+SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
+ENCODERS_PATH = os.path.join(MODEL_DIR, "encoders.pkl")
+GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "llama-3.3-70b-versatile")
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_MB * 1024 * 1024
 
-# ── Global Model Load ──────────────────────────────────────────────────────────
 models = {}
+_result_store = {}
+
+
+class ModelLoadError(RuntimeError):
+    """Raised when the ML model artifacts are not available for prediction."""
+
+
+def _attack_classes_from_encoders(encoders: dict) -> list[str]:
+    attack_encoder = encoders.get("attack_cat") or encoders.get("attack_only")
+    if attack_encoder is None:
+        return []
+    return [str(label) for label in attack_encoder.classes_ if str(label) != "Normal"]
+
 
 def load_models():
     try:
         if all(os.path.exists(p) for p in [BINARY_MODEL_PATH, MULTI_MODEL_PATH, SCALER_PATH, ENCODERS_PATH]):
-            models['binary'] = joblib.load(BINARY_MODEL_PATH)
-            models['multi'] = joblib.load(MULTI_MODEL_PATH)
-            models['scaler'] = joblib.load(SCALER_PATH)
-            models['encoders'] = joblib.load(ENCODERS_PATH)
+            models["binary"] = joblib.load(BINARY_MODEL_PATH)
+            models["multi"] = joblib.load(MULTI_MODEL_PATH)
+            models["scaler"] = joblib.load(SCALER_PATH)
+            models["encoders"] = joblib.load(ENCODERS_PATH)
+            models["attack_classes"] = _attack_classes_from_encoders(models["encoders"])
+            get_explainer().load(
+                models["binary"],
+                models["multi"],
+                MODEL_FEATURES,
+                models["attack_classes"],
+            )
+            models["loaded"] = True
             logger.info("All ML models and encoders loaded successfully.")
+            logger.info(
+                "Using artifacts: binary=%s, multiclass=%s, scaler=%s, encoders=%s",
+                BINARY_MODEL_PATH,
+                MULTI_MODEL_PATH,
+                SCALER_PATH,
+                ENCODERS_PATH,
+            )
         else:
-            logger.warning("One or more model files are missing. Running in MOCK mode.")
-    except Exception as e:
-        logger.error(f"Error loading models: {e}. Running in MOCK mode.")
+            models["loaded"] = False
+            logger.error("One or more model files are missing. ML prediction is disabled.")
+    except Exception as exc:
+        models["loaded"] = False
+        logger.error("Error loading models: %s. ML prediction is disabled.", exc)
+
 
 load_models()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ROUTES
-# ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/health")
 def health():
@@ -82,8 +113,8 @@ def health():
 def demo():
     """Return a placeholder demo analysis for frontend initialization."""
     return jsonify({
-        "source": "demo_capture.pcap",
-        "generated_at": time.strftime('%Y-%m-%d %H:%M:%S'),
+        "source": "demo_flows.csv",
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "packet_count": 1200,
         "flow_count": 1,
         "predictions": [{
@@ -100,233 +131,386 @@ def demo():
             "packet_count": 45,
             "bytes": 5400,
             "risk_score": 0.05,
-            "predicted_label": "Benign",
+            "predicted_label": "Normal",
             "attack_family": "Normal",
             "summary": "Typical HTTPS traffic observed.",
             "recommendations": ["No action required."],
-            "top_features": []
-        }]
+            "top_features": [],
+        }],
     })
 
 
-@app.post("/api/predict/upload")
-def analyze():
-    """
-    POST /api/predict/upload
-    Content-Type: multipart/form-data
-    Body field: file  (.pcap or .pcapng)
-
-    Returns JSON:
-    {
-      "status": "success",
-      "filename": "capture.pcap",
-      "summary": { total_packets, total_flows, feature_count, processing_ms },
-      "flows": [ { src_ip, dst_ip, src_port, dst_port, protocol }, ... ],
-      "features": [[...], [...], ...]   ← shape (N_flows × N_features)
-    }
-    """
-
-    # ── 1. File presence check ─────────────────────────────────────────────
+@app.post("/api/analyze/csv")
+def analyze_csv():
     if "file" not in request.files:
         return _error(400, "NO_FILE", "No file field in request. Send field name 'file'.")
 
     uploaded = request.files["file"]
+    filename = uploaded.filename or ""
 
-    if uploaded.filename == "":
+    if filename == "":
         return _error(400, "EMPTY_FILENAME", "File was attached but has no filename.")
 
-    # ── 2. Extension check ─────────────────────────────────────────────────
-    suffix = Path(uploaded.filename).suffix.lower()
+    suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
-        return _error(
-            400, "BAD_EXTENSION",
-            f"'{suffix}' is not supported. Allowed: {sorted(ALLOWED_EXTENSIONS)}",
-        )
+        return _error(400, "BAD_EXTENSION", "Only .csv files are supported.")
 
-    # ── 3. Save to temp file ───────────────────────────────────────────────
-    safe_name = secure_filename(uploaded.filename)
-    tmp_path  = os.path.join(
-        tempfile.gettempdir(),
-        f"pcap_{uuid.uuid4().hex}_{safe_name}"
-    )
+    safe_name = Path(filename).name
 
     try:
-        uploaded.save(tmp_path)
-        logger.info(f"Saved '{safe_name}' → {tmp_path} "
-                    f"({os.path.getsize(tmp_path) / 1024:.1f} KB)")
+        if not models.get("loaded", False):
+            raise ModelLoadError(
+                "ML models are not loaded. Ensure rf_binary.pkl, rf_multiclass_tuned.pkl, scaler.pkl, and encoders.pkl exist in the models/ directory."
+            )
 
-        # ── 4. Run the pipeline ────────────────────────────────────────────
-        X_scaled, X_raw, df_meta, summary = extract_features_from_pcap(
-            filepath=tmp_path,
+        t_start = time.perf_counter()
+        file_bytes = uploaded.read()
+        feature_rows = parse_csv_to_feature_rows(file_bytes)
+
+        if not feature_rows:
+            return _error(422, "NO_FLOWS", "The CSV did not contain any flow rows.")
+
+        X_scaled, X_raw, df_meta = prepare_for_model(
+            feature_rows,
             scaler_path=SCALER_PATH,
-            flow_timeout=FLOW_TIMEOUT,
-            encoders=models.get('encoders'),
+            encoders=models.get("encoders"),
         )
+        extraction_ms = round((time.perf_counter() - t_start) * 1000, 1)
 
-        # ── 5. Prepare Response (Truncate for performance if too large) ────
+        session_id = uuid.uuid4().hex
         t_ml_start = time.perf_counter()
-        predictions = _features_to_predictions(X_scaled, X_raw, df_meta)
+        predictions = _run_prediction(X_scaled, X_raw, df_meta, session_id=session_id)
         ml_ms = round((time.perf_counter() - t_ml_start) * 1000, 1)
+        attack_counts = Counter(item["attack_family"] for item in predictions)
 
-        logger.info(f"Finished: Extraction={summary['processing_ms']}ms, ML={ml_ms}ms, Flows={summary['total_flows']}")
+        raw_chunk = X_raw.iloc[:100] if hasattr(X_raw, "iloc") else X_raw[:100]
+        raw_list = [[float(v) for v in row] for row in raw_chunk.values.tolist()]
+        scaled_list = [[float(v) for v in row] for row in X_scaled[:100].tolist()]
 
-        # Cast to regular python types to ensure JSON serializability
-        raw_list = []
-        scaled_list = []
-        if len(X_raw) > 0:
-            # Take first 100 rows
-            chunk_raw = X_raw.iloc[:100] if hasattr(X_raw, 'iloc') else X_raw[:100]
-            chunk_scaled = X_scaled[:100]
-            
-            # Convert to list of lists, ensuring native types
-            if hasattr(chunk_raw, 'values'):
-                raw_list = [[float(v) for v in row] for row in chunk_raw.values.tolist()]
-            else:
-                raw_list = [[float(v) for v in row] for row in chunk_raw.tolist()]
-            
-            scaled_list = [[float(v) for v in row] for row in chunk_scaled.tolist()] if hasattr(chunk_scaled, 'tolist') else chunk_scaled.tolist()
+        logger.info(
+            "Finished CSV analysis: Extraction=%sms, ML=%sms, Flows=%s",
+            extraction_ms,
+            ml_ms,
+            len(feature_rows),
+        )
+        logger.info("Prediction attack family counts: %s", dict(attack_counts))
 
         return jsonify({
-            "source":       safe_name,
-            "generated_at": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "packet_count": int(summary["total_packets"]),
-            "flow_count":   int(summary["total_flows"]),
-            "feature_names": summary.get("feature_names", MODEL_FEATURES),
+            "source": safe_name,
+            "session_id": session_id,
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "packet_count": int((X_raw["spkts"] + X_raw["dpkts"]).sum()) if {"spkts", "dpkts"}.issubset(X_raw.columns) else len(feature_rows),
+            "flow_count": int(len(feature_rows)),
+            "feature_names": MODEL_FEATURES,
             "raw_features": raw_list,
             "scaled_features": scaled_list,
-            "predictions":  predictions[:100], 
+            "predictions": predictions[:100],
             "total_predictions": len(predictions),
-            "extraction_ms": summary["processing_ms"],
-            "ml_ms": ml_ms
+            "extraction_ms": extraction_ms,
+            "ml_ms": ml_ms,
         })
 
-    except FileNotFoundError as e:
-        return _error(400, "FILE_NOT_FOUND", str(e))
+    except pd.errors.EmptyDataError:
+        return _error(400, "EMPTY_CSV", "The uploaded CSV is empty.")
 
-    except ValueError as e:
-        # parse_pcap raised: empty file, no IP packets, corrupt header
-        return _error(400, "PARSE_ERROR", str(e))
+    except ValueError as exc:
+        return _error(400, "CSV_ERROR", str(exc))
 
-    except RuntimeError as e:
-        # No flows produced after aggregation
-        return _error(422, "NO_FLOWS", str(e))
+    except ModelLoadError as exc:
+        return _error(500, "MODELS_NOT_LOADED", str(exc))
 
-    except Exception as e:
-        logger.exception(f"Unexpected error processing '{safe_name}'")
-        return _error(500, "INTERNAL_ERROR", f"{type(e).__name__}: {e}")
+    except RuntimeError as exc:
+        return _error(422, "PREDICTION_ERROR", str(exc))
 
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-            logger.info(f"Cleaned up {tmp_path}")
+    except Exception as exc:
+        logger.exception("Unexpected error processing '%s'", safe_name)
+        return _error(500, "INTERNAL_ERROR", f"{type(exc).__name__}: {exc}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
+@app.post("/api/chat/<session_id>/<flow_id>")
+def chat(session_id: str, flow_id: str):
+    payload = request.get_json(silent=True) or {}
+    message = str(payload.get("message", "")).strip()
+    history = payload.get("history", [])
 
-def _features_to_predictions(X_scaled, X_raw, df_meta) -> list[dict]:
-    """Convert the model output and metadata to the structure expected by the frontend."""
-    import random
-    
+    if not message:
+        return _error(400, "EMPTY_MESSAGE", "Message is required.")
+
+    flow_entry = _result_store.get(session_id, {}).get(flow_id)
+    if flow_entry is None:
+        return _error(404, "FLOW_NOT_FOUND", "Flow result was not found for this session.")
+
+    flow_result = flow_entry["prediction"]
+    explain_result = flow_entry.get("explain_result")
+    if not explain_result or not flow_result.get("shap_top_features"):
+        explain_result = get_explainer().explain_flow(
+            flow_entry["X_row_df"],
+            flow_entry.get("predicted_class_idx", 0),
+        )
+        flow_entry["explain_result"] = explain_result
+        flow_result["shap_top_features"] = explain_result["top_10"]
+
+    context = get_explainer().build_chat_context(flow_result, explain_result)
+    system_prompt = _build_chat_system_prompt(context)
+    messages = [
+        {"role": item.get("role"), "content": item.get("content", "")}
+        for item in history
+        if item.get("role") in {"user", "assistant"}
+    ]
+    messages.append({"role": "user", "content": message})
+
+    return Response(
+        _stream_groq_response(system_prompt, messages),
+        mimetype="text/event-stream",
+    )
+
+
+def _run_prediction(X_scaled, X_raw, df_meta, session_id: str | None = None) -> list[dict]:
+    """Convert model outputs and feature rows to the structure expected by the frontend."""
     predictions = []
     meta_records = df_meta.to_dict(orient="records")
-    proto_map = {1: "ICMP", 6: "TCP", 17: "UDP"}
-    
-    # Load categorical encoders
-    encoders = models.get('encoders', {})
-    le_proto = encoders.get('proto')
-    le_service = encoders.get('service')
-    le_state = encoders.get('state')
-    le_attack = encoders.get('attack_cat')
-    
-    binary_model = models.get('binary')
-    multi_model = models.get('multi')
+    binary_model = models.get("binary")
+    multi_model = models.get("multi")
+    encoders = models.get("encoders", {})
+    le_attack = encoders.get("attack_cat") or encoders.get("attack_only")
 
-    for i, meta in enumerate(meta_records):
+    if not binary_model or not multi_model:
+        raise RuntimeError("ML models are not loaded. Prediction requires rf_binary.pkl and rf_multiclass_tuned.pkl.")
+
+    for i in range(len(X_scaled)):
+        meta = meta_records[i] if i < len(meta_records) else {}
         raw_row = X_raw.iloc[i] if hasattr(X_raw, "iloc") else X_raw[i]
-        # 1. Prediction Logic
-        if binary_model and 'scaler' in models:
-            # We already have X_scaled from extract_features_from_pcap
-            # But we need to ensure categorical features were handled.
-            # Actually, extract_features_from_pcap in this version doesn't encodeCATEGORICAL yet.
-            # Let's handle encoding here for the raw features before scaling if necessary,
-            # or assume feature_extraction.py produced raw numbers.
-            # In our current setup, feature_extraction.py produces strings for proto/service/state.
-            
-            # Re-process the row for the model
-            row_dict = df_meta.iloc[i].to_dict()
-            # Combine with quantitative features (simplified)
-            # Actually, df_meta only contains columns starting with "_"
-            # We need the full feature set.
-            pass
+        feat_row = X_scaled[i].reshape(1, -1)
+        prob = binary_model.predict_proba(feat_row)[0][1]
+        risk_score = float(prob)
+        label = "Attack" if risk_score > 0.5 else "Normal"
 
-        # Simplified for now: use X_scaled directly if it matches MODEL_FEATURES
-        if binary_model:
-            feat_row = X_scaled[i].reshape(1, -1)
-            prob = binary_model.predict_proba(feat_row)[0][1] # Probability of attack
-            risk_score = float(prob)
-            label = "Suspicious" if risk_score > 0.5 else "Benign"
-            
-            if label == "Suspicious" and multi_model:
-                attack_idx = multi_model.predict(feat_row)[0]
-                if le_attack:
-                    attack_family = le_attack.inverse_transform([attack_idx])[0]
-                else:
-                    attack_family = f"Category {attack_idx}"
-            else:
-                attack_family = "Normal"
+        if label == "Attack":
+            attack_idx = multi_model.predict(feat_row)[0]
+            attack_family = _decode_attack_family(le_attack, attack_idx)
         else:
-            # Fallback to mock logic
-            risk_score = random.uniform(0.01, 0.15) 
-            label = "Benign"
-            if meta.get("sload", 0) > 1000000:
-                risk_score = random.uniform(0.4, 0.7)
-                label = "Suspicious"
-            attack_family = "Normal" if label == "Benign" else "Unknown"
+            attack_idx = None
+            attack_family = "Normal"
 
-        start_time = meta.get("_start_time", 0)
-        duration = meta.get("_duration_s", 0)
-        
-        proto_num = int(meta.get("_protocol", 0))
-        proto_name = proto_map.get(proto_num, str(proto_num))
-        
-        predictions.append({
-            "flow_id":      f"flow-{i}-{uuid.uuid4().hex[:6]}",
-            "src_ip":       meta.get("_src_ip", ""),
-            "dst_ip":       meta.get("_dst_ip", ""),
-            "src_port":     int(meta.get("_src_port", 0)),
-            "dst_port":     int(meta.get("_dst_port", 0)),
-            "proto":        proto_name,
-            "service":      "HTTP" if meta.get("_dst_port") == 80 else "HTTPS" if meta.get("_dst_port") == 443 else "DNS" if meta.get("_dst_port") == 53 else "-",
-            "first_seen":   datetime.datetime.fromtimestamp(start_time).strftime('%Y-%m-%d %H:%M:%S'),
-            "last_seen":    datetime.datetime.fromtimestamp(start_time + duration).strftime('%Y-%m-%d %H:%M:%S'),
+        start_time = float(meta.get("_start_time", 0) or 0)
+        duration = _raw_value(raw_row, "dur", meta.get("_duration_s", 0))
+        proto_value = _decode_feature_value("proto", _raw_value(raw_row, "proto", meta.get("_protocol", "")))
+        service_value = _decode_feature_value("service", _raw_value(raw_row, "service", "-"))
+        proto_name = _format_proto(proto_value)
+        src_port = int(_raw_value(raw_row, "sport", meta.get("_src_port", 0)))
+        dst_port = int(_raw_value(raw_row, "dsport", meta.get("_dst_port", 0)))
+        service = str(service_value).upper()
+
+        flow_result = {
+            "flow_id": f"flow-{i}-{uuid.uuid4().hex[:6]}",
+            "src_ip": meta.get("_src_ip", ""),
+            "dst_ip": meta.get("_dst_ip", ""),
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "proto": proto_name,
+            "service": service if service not in {"", "NONE", "0.0"} else "-",
+            "first_seen": datetime.datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
+            "last_seen": datetime.datetime.fromtimestamp(start_time + float(duration)).strftime("%Y-%m-%d %H:%M:%S"),
             "duration_seconds": round(float(duration), 4),
-            "packet_count": int((raw_row.get("spkts", 0) if hasattr(raw_row, "get") else 0) + (raw_row.get("dpkts", 0) if hasattr(raw_row, "get") else 0)),
-            "bytes":        int((raw_row.get("sbytes", 0) if hasattr(raw_row, "get") else 0) + (raw_row.get("dbytes", 0) if hasattr(raw_row, "get") else 0)),
-            "risk_score":   round(risk_score, 2),
+            "packet_count": int(_raw_value(raw_row, "spkts", 0) + _raw_value(raw_row, "dpkts", 0)),
+            "bytes": int(_raw_value(raw_row, "sbytes", 0) + _raw_value(raw_row, "dbytes", 0)),
+            "risk_score": round(risk_score, 2),
             "predicted_label": label,
             "attack_family": attack_family,
-            "summary":      f"Observed {proto_name} flow from {meta.get('_src_ip')} to {meta.get('_dst_ip')}. Predicted as {label}.",
-            "recommendations": ["No immediate action required."] if label == "Benign" else ["Monitor this source IP for further activity.", "Isolate host if behavior persists."],
-            "top_features": []
-        })
+            "summary": f"Observed {proto_name} flow predicted as {label}.",
+            "recommendations": ["No immediate action required."] if label == "Normal" else [
+                "Monitor this source for further activity.",
+                "Isolate host if behavior persists.",
+            ],
+            "top_features": [],
+            "shap_top_features": [],
+        }
+
+        X_row_df = pd.DataFrame([X_scaled[i]], columns=MODEL_FEATURES)
+        explain_result = None
+        if label == "Attack" and attack_idx is not None:
+            explain_result = get_explainer().explain_flow(X_row_df, attack_idx)
+            flow_result["shap_top_features"] = explain_result["top_10"]
+            flow_result["top_features"] = _to_legacy_feature_drivers(explain_result["top_10"])
+
+        predictions.append(flow_result)
+
+        if session_id is not None:
+            _result_store.setdefault(session_id, {})[flow_result["flow_id"]] = {
+                "prediction": flow_result,
+                "X_row_df": X_row_df,
+                "predicted_class_idx": int(attack_idx) if attack_idx is not None else 0,
+                "explain_result": explain_result,
+            }
+
     return predictions
 
 
+def _to_legacy_feature_drivers(shap_features: list[dict]) -> list[dict]:
+    return [
+        {
+            "name": item["feature"],
+            "raw_value": str(item["feature_value"]),
+            "impact": min(1.0, float(item["abs_impact"])),
+            "plain_english": item["semantic"],
+        }
+        for item in shap_features[:5]
+    ]
+
+
+def _build_chat_system_prompt(context: dict) -> str:
+    toward_attack = "\n".join(
+        f"  - {item['feature']} = {item['feature_value']} (impact: +{item['shap_value']}) — {item['semantic']}"
+        for item in context["top_features"]
+        if item["direction"] == "toward_attack"
+    ) or "  - None"
+    toward_normal = "\n".join(
+        f"  - {item['feature']} = {item['feature_value']} (impact: {item['shap_value']}) — {item['semantic']}"
+        for item in context["top_features"]
+        if item["direction"] == "toward_normal"
+    ) or "  - None"
+
+    flow_id = context["flow_id"]
+    attack_type = context["attack_type"]
+    attack_probability = context["attack_probability"]
+    confidence = context["confidence"]
+    attack_signature = context["attack_signature"]
+    base_value = context["base_value"]
+
+    return f"""You are a cybersecurity AI assistant embedded in a real-time SOC (Security Operations Center) dashboard.
+Your role is to explain network intrusion detection decisions to security analysts in plain English.
+You are precise, concise, and always ground your explanations in the actual data shown below.
+Never invent numbers, features, or probabilities that are not in the data below.
+
+--- CURRENT ALERT ---
+Flow ID: {flow_id}
+Verdict: {attack_type}
+Attack probability: {attack_probability}%
+Model confidence: {confidence}%
+Attack description: {attack_signature}
+
+--- EVIDENCE (SHAP feature contributions) ---
+Features that pushed the model toward ATTACK:
+{toward_attack}
+
+Features that pushed the model toward NORMAL:
+{toward_normal}
+
+Model base rate (prior probability before seeing this flow): {base_value}
+
+--- YOUR BEHAVIOR ---
+- When asked to explain the alert: give a 3-5 sentence plain-English explanation connecting the top features to the attack type.
+- When asked for a report paragraph: write formal technical prose suitable for a security incident report.
+- When asked what to do: give concrete Tier-1 SOC response steps appropriate to the attack type.
+- When asked if it could be a false positive: analyze the evidence honestly and give a probability estimate with reasoning.
+- For any follow-up question: answer using only the data above, never make up additional evidence.
+- Keep responses under 200 words unless the analyst asks for a report paragraph.
+"""
+
+
+def _stream_groq_response(system_prompt: str, messages: list[dict]):
+    try:
+        if not os.getenv("GROQ_API_KEY"):
+            raise RuntimeError(
+                "GROQ_API_KEY is not set. Set it in the same terminal before starting the backend."
+            )
+
+        from groq import Groq
+
+        client = Groq()
+        stream = client.chat.completions.create(
+            model=GROQ_CHAT_MODEL,
+            max_tokens=600,
+            messages=[{"role": "system", "content": system_prompt}, *messages],
+            stream=True,
+        )
+        for chunk in stream:
+            choices = getattr(chunk, "choices", [])
+            if not choices:
+                continue
+
+            delta = getattr(choices[0], "delta", None)
+            text = getattr(delta, "content", "") if delta else ""
+            if text:
+                yield f"data: {json.dumps({'text': text})}\n\n"
+    except Exception as exc:
+        logger.exception("Groq chat streaming failed.")
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    yield 'data: {"done": true}\n\n'
+
+
+def _raw_value(row, key: str, default=0):
+    if hasattr(row, "get"):
+        value = row.get(key, default)
+    else:
+        value = default
+
+    try:
+        if pd.isna(value):
+            return default
+    except TypeError:
+        pass
+
+    return value
+
+
+def _decode_feature_value(feature: str, value):
+    encoder = models.get("encoders", {}).get(feature)
+    if encoder is None:
+        return value
+
+    try:
+        index = int(value)
+        if 0 <= index < len(encoder.classes_):
+            return encoder.inverse_transform([index])[0]
+    except Exception:
+        return value
+
+    return value
+
+
+def _decode_attack_family(encoder, attack_idx) -> str:
+    if encoder is None:
+        return f"Category {attack_idx}"
+
+    index = int(attack_idx)
+    classes = list(encoder.classes_)
+
+    if "Normal" in classes and len(classes) == 10:
+        attack_classes = [label for label in classes if label != "Normal"]
+        if 0 <= index < len(attack_classes):
+            return str(attack_classes[index])
+
+    if 0 <= index < len(classes):
+        return str(encoder.inverse_transform([index])[0])
+
+    return f"Category {attack_idx}"
+
+
+def _format_proto(value) -> str:
+    proto_map = {
+        1: "ICMP",
+        6: "TCP",
+        17: "UDP",
+        "1": "ICMP",
+        "6": "TCP",
+        "17": "UDP",
+        "icmp": "ICMP",
+        "tcp": "TCP",
+        "udp": "UDP",
+    }
+    return proto_map.get(value, str(value).upper() if str(value) else "UNK")
+
+
 def _error(http_code: int, code: str, message: str):
-    """Return a consistent JSON error response."""
-    logger.warning(f"[{http_code}] {code}: {message}")
+    logger.warning("[%s] %s: %s", http_code, code, message)
     return jsonify({
-        "status":  "error",
-        "code":    code,
+        "status": "error",
+        "code": code,
         "message": message,
     }), http_code
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     app.run(

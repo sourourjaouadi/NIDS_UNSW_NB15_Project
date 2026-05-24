@@ -8,19 +8,13 @@ export const predictionStyles: Record<
     dot: string;
   }
 > = {
-  Benign: {
+  Normal: {
     badge:
       "bg-emerald-500/15 text-emerald-300 ring-1 ring-inset ring-emerald-400/25",
     row: "hover:bg-emerald-500/6",
     dot: "bg-emerald-400"
   },
-  Suspicious: {
-    badge:
-      "bg-amber-500/15 text-amber-200 ring-1 ring-inset ring-amber-400/25",
-    row: "hover:bg-amber-500/6",
-    dot: "bg-amber-400"
-  },
-  Malicious: {
+  Attack: {
     badge: "bg-rose-500/15 text-rose-200 ring-1 ring-inset ring-rose-400/25",
     row: "hover:bg-rose-500/6",
     dot: "bg-rose-400"

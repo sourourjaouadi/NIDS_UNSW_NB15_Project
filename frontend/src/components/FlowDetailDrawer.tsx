@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Copy, Info, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { FlowRecord } from "../types/nids";
 import { buildExplanation, formatBytes, formatDuration, formatTime, predictionStyles } from "../utils/format";
 
@@ -9,8 +10,22 @@ interface FlowDetailDrawerProps {
   onCopy: (message: string) => void;
 }
 
+interface DrawerChatMessage {
+  id: string;
+  role: "assistant" | "user";
+  content: string;
+  isStreaming?: boolean;
+}
+
+const REPORT_PROMPT =
+  "Write a formal 3-sentence paragraph suitable for a security incident report describing this alert, the evidence, and the recommended action.";
+
 export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProps) => {
   const explanation = flow ? buildExplanation(flow) : "";
+  const [chatMessages, setChatMessages] = useState<DrawerChatMessage[]>([]);
+  const [chatHistory, setChatHistory] = useState<Array<{ role: "assistant" | "user"; content: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
 
   const handleCopy = async () => {
     if (!flow) return;
@@ -22,6 +37,128 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
       onCopy(`Clipboard access failed for ${flow.id}.`);
     }
   };
+
+  function openChat(sessionId?: string, flowId?: string) {
+    void sessionId;
+    void flowId;
+    setChatInput("");
+    setChatHistory([]);
+    setChatMessages([
+      {
+        id: `assistant-initial-${Date.now()}`,
+        role: "assistant",
+        content: "I've analyzed this alert. Ask me anything about it, or I can write a report paragraph."
+      }
+    ]);
+  }
+
+  async function sendChatMessage(sessionId?: string, flowId?: string, forcedMessage?: string, copyResponse = false) {
+    const userText = (forcedMessage ?? chatInput).trim();
+    if (!userText) return;
+
+    setChatInput("");
+
+    const historySnapshot = chatHistory;
+    const userMessage: DrawerChatMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: userText
+    };
+    const assistantId = `assistant-${Date.now() + 1}`;
+    const assistantMessage: DrawerChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      isStreaming: true
+    };
+
+    setChatMessages((current) => [...current, userMessage, assistantMessage]);
+
+    if (!sessionId || !flowId) {
+      const message = "Chat context is unavailable for this flow because the backend session or flow ID is missing.";
+      setChatMessages((current) =>
+        current.map((item) => (item.id === assistantId ? { ...item, content: message, isStreaming: false } : item))
+      );
+      return;
+    }
+
+    let assistantText = "";
+
+    try {
+      const response = await fetch("/api/chat/" + sessionId + "/" + flowId, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userText, history: historySnapshot })
+      });
+
+      if (!response.ok || !response.body) {
+        throw new Error("The chat endpoint did not return a readable stream.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = false;
+
+      while (!done) {
+        const result = await reader.read();
+        done = result.done;
+        buffer += decoder.decode(result.value ?? new Uint8Array(), { stream: !done });
+
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+
+        for (const event of events) {
+          const lines = event.split("\n").filter((line) => line.startsWith("data:"));
+          for (const line of lines) {
+            const data = line.slice(5).trim();
+            if (!data) continue;
+
+            const payload = JSON.parse(data) as { text?: string; delta?: string; error?: string; done?: boolean };
+            if (payload.error) {
+              throw new Error(payload.error);
+            }
+            if (payload.done) {
+              done = true;
+              break;
+            }
+
+            const delta = payload.text ?? payload.delta ?? "";
+            if (!delta) continue;
+
+            assistantText += delta;
+            setChatMessages((current) =>
+              current.map((item) => (item.id === assistantId ? { ...item, content: assistantText } : item))
+            );
+          }
+        }
+      }
+
+      setChatMessages((current) =>
+        current.map((item) => (item.id === assistantId ? { ...item, content: assistantText, isStreaming: false } : item))
+      );
+      setChatHistory([...historySnapshot, { role: "user", content: userText }, { role: "assistant", content: assistantText }]);
+
+      if (copyResponse && assistantText) {
+        await navigator.clipboard.writeText(assistantText);
+        onCopy("Report paragraph copied to clipboard.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Chat request failed.";
+      setChatMessages((current) =>
+        current.map((item) => (item.id === assistantId ? { ...item, content: message, isStreaming: false } : item))
+      );
+    }
+  }
+
+  useEffect(() => {
+    if (!flow) return;
+    openChat(flow.sessionId, flow.backendFlowId ?? flow.id);
+  }, [flow?.id]);
+
+  useEffect(() => {
+    chatThreadRef.current?.scrollTo({ top: chatThreadRef.current.scrollHeight, behavior: "smooth" });
+  }, [chatMessages]);
 
   return (
     <AnimatePresence>
@@ -141,6 +278,86 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
                     </div>
                   </div>
                 ))}
+              </div>
+
+              <div className="mt-8">
+                <h3 className="text-lg font-semibold text-white">Alert chat</h3>
+                <div
+                  id="chat-thread"
+                  ref={chatThreadRef}
+                  className="mt-4"
+                  style={{
+                    background: "var(--surface2, rgba(15, 23, 42, 0.55))",
+                    border: "1px solid var(--border, rgba(255, 255, 255, 0.1))",
+                    borderRadius: "8px",
+                    padding: "12px",
+                    height: "280px",
+                    overflowY: "auto",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "10px"
+                  }}
+                >
+                  {chatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      style={{
+                        alignSelf: message.role === "user" ? "flex-end" : "flex-start",
+                        background:
+                          message.role === "user"
+                            ? "var(--blue-dim, rgba(14, 165, 233, 0.22))"
+                            : "var(--surface, rgba(15, 23, 42, 0.8))",
+                        fontSize: "12px",
+                        fontFamily: "var(--sans, Inter, sans-serif)",
+                        maxWidth: "85%",
+                        borderRadius: "8px",
+                        padding: "8px 12px"
+                      }}
+                      className="leading-6 text-slate-100"
+                    >
+                      {message.content}
+                      {message.isStreaming && <span className="animate-pulse">|</span>}
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void sendChatMessage(flow.sessionId, flow.backendFlowId ?? flow.id, REPORT_PROMPT, true)}
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-300/45 hover:bg-cyan-400/15"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy as Report
+                </button>
+
+                <div className="mt-3 flex gap-2">
+                  <input
+                    id="chat-input"
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void sendChatMessage(flow.sessionId, flow.backendFlowId ?? flow.id);
+                      }
+                    }}
+                    placeholder="Ask about this alert..."
+                    style={{
+                      fontFamily: "var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
+                      fontSize: "12px",
+                      width: "100%"
+                    }}
+                    className="rounded-lg border border-white/10 bg-[#0B1320]/80 px-3 py-2 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/45"
+                  />
+                  <button
+                    id="chat-send"
+                    type="button"
+                    onClick={() => void sendChatMessage(flow.sessionId, flow.backendFlowId ?? flow.id)}
+                    className="rounded-lg border border-cyan-400/20 bg-cyan-400 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-cyan-300"
+                  >
+                    Send
+                  </button>
+                </div>
               </div>
 
               <div className="mt-8 rounded-[24px] border border-white/8 bg-white/5 p-5">

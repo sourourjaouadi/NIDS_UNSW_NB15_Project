@@ -29,7 +29,7 @@ export const HeroSection = ({
     return current;
   }, null);
 
-  const suspiciousOrWorse = flows.filter((flow) => flow.prediction !== "Benign").length;
+  const attackCount = flows.filter((flow) => flow.prediction === "Attack").length;
 
   return (
     <section id="overview" className="relative overflow-hidden">
@@ -149,7 +149,7 @@ export const HeroSection = ({
                   </div>
                   <div>
                     <p className="text-sm text-slate-300">Active flagged flows</p>
-                    <p className="text-3xl font-semibold text-white">{suspiciousOrWorse}</p>
+                    <p className="text-3xl font-semibold text-white">{attackCount}</p>
                   </div>
                 </div>
                 <p className="mt-4 text-sm leading-6 text-cyan-100/80">

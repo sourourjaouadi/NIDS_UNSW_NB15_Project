@@ -1,368 +1,300 @@
 """
-PCAP Feature Extraction Pipeline (STREAMING)
-=============================================
-Converts a raw .pcap file into a scaled numpy feature matrix
-ready for the Binary RF / XGBoost classifiers.
+CSV feature preparation for UNSW-NB15 model input.
 
-Optimization:
-- Processes packets one by one (streaming) to support 2GB+ files.
-- Uses Welford's algorithm for running mean/std of inter-arrival times and TTL.
-- Periodically expires old flows to keep memory usage constant.
+The backend accepts flow-level CSV rows only. Uploaded rows are normalized to the
+38 model features, enriched with count-window defaults when possible, then
+encoded and scaled for the trained classifiers.
 """
 
-import os
-import socket
-import logging
-import time
-import warnings
-import math
-from typing import Optional
+from __future__ import annotations
 
-import dpkt
+import io
+import logging
+import os
+import pickle
+import warnings
+from collections import deque
+from typing import Any, Dict, Iterable, List
+
 import numpy as np
 import pandas as pd
-import pickle
-from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CONSTANTS & CONFIG
-# ══════════════════════════════════════════════════════════════════════════════
-
-TCP_FIN, TCP_SYN, TCP_RST, TCP_PSH, TCP_ACK, TCP_URG = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
-
 MODEL_FEATURES = [
-    'sport', 'dsport', 'proto', 'state', 'dur', 'sbytes', 'dbytes', 
-    'sttl', 'dttl', 'service', 'sload', 'dload', 'spkts', 'dpkts', 
-    'dwin', 'stcpb', 'dtcpb', 'trans_depth', 'res_bdy_len', 'sjit', 
-    'djit', 'sintpkt', 'dintpkt', 'tcprtt', 'synack', 'ackdat', 
-    'is_sm_ips_ports', 'ct_state_ttl', 'ct_flw_http_mthd', 'is_ftp_login', 
-    'ct_ftp_cmd', 'ct_srv_src', 'ct_srv_dst', 'ct_dst_ltm', 'ct_src_ltm', 
-    'ct_src_dport_ltm', 'ct_dst_sport_ltm', 'ct_dst_src_ltm'
+    "sport", "dsport", "proto", "state", "dur", "sbytes", "dbytes",
+    "sttl", "dttl", "service", "sload", "dload", "spkts", "dpkts",
+    "dwin", "stcpb", "dtcpb", "trans_depth", "res_bdy_len", "sjit",
+    "djit", "sintpkt", "dintpkt", "tcprtt", "synack", "ackdat",
+    "is_sm_ips_ports", "ct_state_ttl", "ct_flw_http_mthd", "is_ftp_login",
+    "ct_ftp_cmd", "ct_srv_src", "ct_srv_dst", "ct_dst_ltm", "ct_src_ltm",
+    "ct_src_dport_ltm", "ct_dst_sport_ltm", "ct_dst_src_ltm",
 ]
 
+FEATURE_NAMES = MODEL_FEATURES
 
-class RunningStats:
-    """Computes mean/std/min/max in a single pass using Welford's algorithm."""
-    def __init__(self):
-        self.n = 0
-        self.mean = 0.0
-        self.m2 = 0.0
-        self.min = float('inf')
-        self.max = float('-inf')
-        self.sum = 0.0
+FEATURE_DEFAULTS: Dict[str, Any] = {
+    name: 0 for name in FEATURE_NAMES
+}
+FEATURE_DEFAULTS.update({
+    "proto": "tcp",
+    "state": "CON",
+    "service": "none",
+    "ct_srv_src": 1,
+    "ct_srv_dst": 1,
+    "ct_dst_ltm": 1,
+    "ct_src_ltm": 1,
+    "ct_src_dport_ltm": 1,
+    "ct_dst_sport_ltm": 1,
+    "ct_dst_src_ltm": 1,
+})
 
-    def update(self, x: float):
-        self.n += 1
-        self.sum += x
-        if x < self.min: self.min = x
-        if x > self.max: self.max = x
-        
-        delta = x - self.mean
-        self.mean += delta / self.n
-        delta2 = x - self.mean
-        self.m2 += delta * delta2
+COUNT_FEATURES = {
+    "ct_state_ttl",
+    "ct_srv_src",
+    "ct_srv_dst",
+    "ct_dst_ltm",
+    "ct_src_ltm",
+    "ct_src_dport_ltm",
+    "ct_dst_sport_ltm",
+    "ct_dst_src_ltm",
+}
 
-    @property
-    def variance(self) -> float:
-        return self.m2 / self.n if self.n > 1 else 0.0
+CICFLOWMETER_ALIASES = {
+    "Src Port": "sport",
+    "Source Port": "sport",
+    "Sport": "sport",
+    "Dst Port": "dsport",
+    "Destination Port": "dsport",
+    "Dport": "dsport",
+    "Protocol": "proto",
+    "Flow Duration": "dur",
+    "Total Fwd Packets": "spkts",
+    "Tot Fwd Pkts": "spkts",
+    "Total Backward Packets": "dpkts",
+    "Tot Bwd Pkts": "dpkts",
+    "Total Length of Fwd Packets": "sbytes",
+    "TotLen Fwd Pkts": "sbytes",
+    "Fwd Header Length": "sbytes",
+    "Total Length of Bwd Packets": "dbytes",
+    "TotLen Bwd Pkts": "dbytes",
+    "Bwd Header Length": "dbytes",
+    "Fwd Packets/s": "sload",
+    "Fwd Bytes/s": "sload",
+    "Flow Bytes/s": "sload",
+    "Bwd Packets/s": "dload",
+    "Fwd IAT Mean": "sintpkt",
+    "Bwd IAT Mean": "dintpkt",
+    "Fwd IAT Std": "sjit",
+    "Bwd IAT Std": "djit",
+    "Init_Win_bytes_backward": "dwin",
+    "Init Bwd Win Byts": "dwin",
+    "Subflow Fwd Bytes": "sbytes",
+    "Subflow Bwd Bytes": "dbytes",
+    "Subflow Fwd Packets": "spkts",
+    "Subflow Bwd Packets": "dpkts",
+    "Fwd PSH Flags": "state",
+    "SYN Flag Count": "synack",
+    "ACK Flag Count": "ackdat",
+}
 
-    @property
-    def std(self) -> float:
-        return math.sqrt(self.variance)
-
-
-class FlowRecord:
-    """Accumulates statistics for a bidirectional flow."""
-    def __init__(self, pkt: dict):
-        self.src_ip = pkt["src_ip"]
-        self.dst_ip = pkt["dst_ip"]
-        self.src_port = pkt["src_port"]
-        self.dst_port = pkt["dst_port"]
-        self.protocol = pkt["protocol"]
-        
-        self.start_ts = pkt["timestamp"]
-        self.last_ts = pkt["timestamp"]
-        
-        self.last_fwd_ts = pkt["timestamp"]
-        self.last_bwd_ts = None
-        
-        self.sbytes = pkt["ip_len"]
-        self.dbytes = 0
-        self.spkts = 1
-        self.dpkts = 0
-        
-        self.sttl_sum = pkt["ttl"]
-        self.dttl_sum = 0
-        
-        # Inter-arrival Time Stats
-        self.iat_all = RunningStats()
-        self.iat_fwd = RunningStats()
-        self.iat_bwd = RunningStats()
-        
-        # TCP Flags
-        self.flags = {f: 0 for f in ['syn','fin','rst','ack','psh','urg']}
-        self._update_flags(pkt["tcp_flags"])
-
-    def _update_flags(self, bits: int):
-        if bits & TCP_SYN: self.flags['syn'] += 1
-        if bits & TCP_FIN: self.flags['fin'] += 1
-        if bits & TCP_RST: self.flags['rst'] += 1
-        if bits & TCP_ACK: self.flags['ack'] += 1
-        if bits & TCP_PSH: self.flags['psh'] += 1
-        if bits & TCP_URG: self.flags['urg'] += 1
-
-    def update(self, pkt: dict):
-        is_fwd = (pkt["src_ip"] == self.src_ip)
-        ts = pkt["timestamp"]
-        
-        # Update IATs
-        self.iat_all.update(ts - self.last_ts)
-        
-        if is_fwd:
-            self.iat_fwd.update(ts - self.last_fwd_ts)
-            self.last_fwd_ts = ts
-            self.sbytes += pkt["ip_len"]
-            self.spkts += 1
-            self.sttl_sum += pkt["ttl"]
-        else:
-            if self.last_bwd_ts is not None:
-                self.iat_bwd.update(ts - self.last_bwd_ts)
-            self.last_bwd_ts = ts
-            self.dbytes += pkt["ip_len"]
-            self.dpkts += 1
-            self.dttl_sum += pkt["ttl"]
-
-        self.last_ts = ts
-        self._update_flags(pkt["tcp_flags"])
-
-    def to_feature_dict(self) -> dict:
-        dur = max(self.last_ts - self.start_ts, 1e-9)
-        
-        return {
-            "_src_ip": self.src_ip, "_dst_ip": self.dst_ip,
-            "_src_port": self.src_port, "_dst_port": self.dst_port,
-            "_protocol": self.protocol, "_start_time": self.start_ts,
-            "_duration_s": dur,
-
-            "sport": self.src_port,
-            "dsport": self.dst_port,
-            "proto": str(self.protocol), # Use string for consistency before encoding
-            "state": "FIN" if self.flags['fin'] > 0 else "CON" if self.protocol == 6 else "INT", # Basic state heuristic
-            "dur": round(dur, 6),
-            "sbytes": self.sbytes,
-            "dbytes": self.dbytes,
-            "sttl": int(self.sttl_sum / self.spkts),
-            "dttl": int(self.dttl_sum / self.dpkts) if self.dpkts > 0 else 0,
-            "service": "dns" if (self.src_port == 53 or self.dst_port == 53) else "http" if (self.src_port == 80 or self.dst_port == 80) else "ssl" if (self.src_port == 443 or self.dst_port == 443) else "none",
-            "sload": round((self.sbytes * 8) / dur, 4),
-            "dload": round((self.dbytes * 8) / dur, 4),
-            "spkts": self.spkts,
-            "dpkts": self.dpkts,
-            "dwin": self.flags['ack'] * 255 if self.protocol == 6 else 0, # Placeholder for window size logic
-            "stcpb": 0, # Stream index placeholders
-            "dtcpb": 0,
-            "trans_depth": 1 if (self.src_port == 80 or self.dst_port == 80) else 0,
-            "res_bdy_len": 0,
-            "sjit": round(self.iat_fwd.std, 6),
-            "djit": round(self.iat_bwd.std, 6),
-            "sintpkt": round(self.iat_fwd.mean, 6),
-            "dintpkt": round(self.iat_bwd.mean, 6),
-            "tcprtt": 0, # RTT placeholders (requires sequence tracking)
-            "synack": 0,
-            "ackdat": 0,
-            "is_sm_ips_ports": 1 if (self.src_ip == self.dst_ip and self.src_port == self.dst_port) else 0,
-            "ct_state_ttl": 0, # Placeholders for complex tracking features
-            "ct_flw_http_mthd": 0,
-            "is_ftp_login": 0,
-            "ct_ftp_cmd": 0,
-            "ct_srv_src": 1,
-            "ct_srv_dst": 1,
-            "ct_dst_ltm": 1,
-            "ct_src_ltm": 1,
-            "ct_src_dport_ltm": 1,
-            "ct_dst_sport_ltm": 1,
-            "ct_dst_src_ltm": 1
-        }
+NUMERIC_FEATURES = [name for name in FEATURE_NAMES if name not in {"proto", "state", "service"}]
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  STREAMING PIPELINE
-# ══════════════════════════════════════════════════════════════════════════════
+def _canonical_column_name(name: str) -> str:
+    stripped = name.strip()
+    if stripped in FEATURE_NAMES:
+        return stripped
+    return CICFLOWMETER_ALIASES.get(stripped, stripped)
 
-def extract_features_from_pcap(
-    filepath: str,
-    scaler_path: str = "models/scaler.pkl",
-    flow_timeout: float = 120.0,
-    feature_list: list[str] = None,
-    encoders: dict = None,
-) -> tuple[np.ndarray, np.ndarray, pd.DataFrame, dict]:
-    """Streaming entry point: .pcap -> (scaled, raw, meta, summary)"""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"PCAP file not found: {filepath}")
 
-    t_start = time.perf_counter()
-    active_flows: dict[tuple, FlowRecord] = {}
-    completed_features = []
-    pkt_count = 0
-    skipped = 0
+def parse_csv_to_feature_rows(file_bytes: bytes) -> List[Dict[str, Any]]:
+    """
+    Read uploaded CSV bytes and return model feature rows.
 
-    with open(filepath, "rb") as f:
-        # Determine opener
-        magic = f.read(4)
-        f.seek(0)
-        opener = dpkt.pcapng.Reader if magic == b"\x0a\x0d\x0d\x0a" else dpkt.pcap.Reader
-        
-        try:
-            pcap = opener(f)
-        except Exception as e:
-            raise ValueError(f"Cannot open PCAP file: {e}")
+    CICFlowMeter aliases are renamed to UNSW-NB15 feature names, non-feature
+    columns are dropped, and missing features are filled with semantic defaults.
+    """
+    df = pd.read_csv(io.BytesIO(file_bytes))
+    df = df.rename(columns={col: _canonical_column_name(str(col)) for col in df.columns})
+    df = df.loc[:, ~df.columns.duplicated()]
+    matched_columns = [col for col in df.columns if col in FEATURE_NAMES]
+    df = df.reindex(columns=FEATURE_NAMES)
 
-        for ts, raw_buf in pcap:
-            pkt_count += 1
-            try:
-                ip = None
-                try:
-                    eth = dpkt.ethernet.Ethernet(raw_buf)
-                    ip = eth.data
-                except Exception:
-                    pass
-                
-                if not isinstance(ip, dpkt.ip.IP):
-                    try:
-                        ip = dpkt.ip.IP(raw_buf)
-                    except Exception:
-                        if len(raw_buf) > 16:
-                            try:
-                                ip = dpkt.ip.IP(raw_buf[16:])
-                            except Exception:
-                                pass
-                
-                if not isinstance(ip, dpkt.ip.IP):
-                    raise ValueError(f"Unsupported packet type: {type(ip).__name__ if ip else 'None'}")
-                
-                src_ip = socket.inet_ntoa(ip.src)
-                dst_ip = socket.inet_ntoa(ip.dst)
-                
-                proto = ip.p
-                transport = ip.data
-                src_port = dst_port = tcp_flags = 0
-                
-                if isinstance(transport, dpkt.tcp.TCP):
-                    src_port, dst_port, tcp_flags = transport.sport, transport.dport, transport.flags
-                elif isinstance(transport, dpkt.udp.UDP):
-                    src_port, dst_port = transport.sport, transport.dport
+    for column, default in FEATURE_DEFAULTS.items():
+        df[column] = df[column].fillna(default)
 
-                pkt = {
-                    "timestamp": float(ts), "src_ip": src_ip, "dst_ip": dst_ip,
-                    "src_port": src_port, "dst_port": dst_port, "protocol": proto,
-                    "ip_len": ip.len, "ttl": ip.ttl, "tcp_flags": tcp_flags
-                }
-
-                # Progress Logging for large files
-                if pkt_count % 25000 == 0:
-                    logger.info(f"Processed {pkt_count:,} packets... ({len(active_flows)} active flows)")
-
-                # Flow Management
-                key = _make_key(pkt)
-                if key in active_flows:
-                    flow = active_flows[key]
-                    if (ts - flow.last_ts) > flow_timeout:
-                        completed_features.append(flow.to_feature_dict())
-                        active_flows[key] = FlowRecord(pkt)
-                    else:
-                        flow.update(pkt)
-                else:
-                    active_flows[key] = FlowRecord(pkt)
-
-                # Periodic Cleanup (Every 100k packets) to keep RAM low
-                if pkt_count % 100000 == 0:
-                    expired = [k for k, v in active_flows.items() if (ts - v.last_ts) > flow_timeout]
-                    for k in expired:
-                        completed_features.append(active_flows.pop(k).to_feature_dict())
-
-            except Exception as e:
-                skipped += 1
-                if skipped <= 3:
-                    logger.debug(f"Skipped packet #{pkt_count}: {type(e).__name__}: {e}")
-                continue
-
-    # Flush remaining flows
-    for flow in active_flows.values():
-        if (flow.spkts + flow.dpkts) >= 1: # Min packets to be useful
-            completed_features.append(flow.to_feature_dict())
-
-    if not completed_features:
-        raise RuntimeError(
-            f"No valid flows found. Processed {pkt_count} packets, skipped {skipped} (likely non-IPv4 or unsupported link-layer). "
-            "Ensure your PCAP contains IPv4 traffic."
+    missing_count = len(FEATURE_NAMES) - len(matched_columns)
+    if missing_count:
+        logger.warning(
+            "CSV is missing %s/%s model feature columns. Missing values were filled with defaults.",
+            missing_count,
+            len(FEATURE_NAMES),
         )
 
-    # Model Compatibility Layer
-    X_scaled, X_raw, df_meta = prepare_for_model(completed_features, scaler_path, feature_list, encoders)
+    return df.to_dict(orient="records")
 
-    elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
-    summary = {
-        "total_packets": pkt_count, "total_flows": len(completed_features),
-        "feature_count": X_scaled.shape[1], "processing_ms": elapsed_ms,
-        "feature_names": list(X_raw.columns) if isinstance(X_raw, pd.DataFrame) else MODEL_FEATURES
+
+def compute_features(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Normalize CSV feature dictionaries and calculate UNSW count features when
+    source/destination metadata is present.
+    """
+    feature_rows: List[Dict[str, Any]] = []
+    window: deque[Dict[str, Any]] = deque(maxlen=100)
+
+    for row in rows:
+        normalized = {name: row.get(name, FEATURE_DEFAULTS[name]) for name in FEATURE_NAMES}
+        _apply_semantic_fills(normalized)
+
+        src_ip = row.get("srcip") or row.get("src_ip") or row.get("_src_ip")
+        dst_ip = row.get("dstip") or row.get("dst_ip") or row.get("_dst_ip")
+        if src_ip is not None and dst_ip is not None:
+            normalized.update(_count_window_features(normalized, src_ip, dst_ip, window))
+            window.append({
+                "src_ip": src_ip,
+                "dst_ip": dst_ip,
+                "sport": normalized["sport"],
+                "dsport": normalized["dsport"],
+                "service": normalized["service"],
+                "state": normalized["state"],
+                "sttl": normalized["sttl"],
+            })
+
+        feature_rows.append(normalized)
+
+    return feature_rows
+
+
+def _apply_semantic_fills(row: Dict[str, Any]) -> None:
+    for key, default in FEATURE_DEFAULTS.items():
+        value = row.get(key)
+        if pd.isna(value) or value == "":
+            row[key] = default
+
+    if str(row.get("service", "")).strip() in {"", "-", "nan", "None"}:
+        row["service"] = "none"
+
+    for key in ("ct_flw_http_mthd", "is_ftp_login", "ct_ftp_cmd"):
+        row[key] = _to_number(row.get(key), 0)
+
+    for key in NUMERIC_FEATURES:
+        row[key] = _to_number(row.get(key), FEATURE_DEFAULTS[key])
+
+
+def _count_window_features(
+    row: Dict[str, Any],
+    src_ip: Any,
+    dst_ip: Any,
+    window: deque[Dict[str, Any]],
+) -> Dict[str, int]:
+    candidates = list(window) + [{
+        "src_ip": src_ip,
+        "dst_ip": dst_ip,
+        "sport": row["sport"],
+        "dsport": row["dsport"],
+        "service": row["service"],
+        "state": row["state"],
+        "sttl": row["sttl"],
+    }]
+
+    return {
+        "ct_state_ttl": sum(1 for item in candidates if item["state"] == row["state"] and item["sttl"] == row["sttl"]),
+        "ct_srv_src": sum(1 for item in candidates if item["src_ip"] == src_ip and item["service"] == row["service"]),
+        "ct_srv_dst": sum(1 for item in candidates if item["dst_ip"] == dst_ip and item["service"] == row["service"]),
+        "ct_dst_ltm": sum(1 for item in candidates if item["dst_ip"] == dst_ip),
+        "ct_src_ltm": sum(1 for item in candidates if item["src_ip"] == src_ip),
+        "ct_src_dport_ltm": sum(1 for item in candidates if item["src_ip"] == src_ip and item["dsport"] == row["dsport"]),
+        "ct_dst_sport_ltm": sum(1 for item in candidates if item["dst_ip"] == dst_ip and item["sport"] == row["sport"]),
+        "ct_dst_src_ltm": sum(1 for item in candidates if item["src_ip"] == src_ip and item["dst_ip"] == dst_ip),
     }
 
-    return X_scaled, X_raw, df_meta, summary
 
-
-def _make_key(pkt: dict) -> tuple:
-    ep_a = (pkt["src_ip"], pkt["src_port"])
-    ep_b = (pkt["dst_ip"], pkt["dst_port"])
-    if ep_a > ep_b: ep_a, ep_b = ep_b, ep_a
-    return (*ep_a, *ep_b, pkt["protocol"])
+def _to_number(value: Any, default: Any) -> float:
+    if pd.isna(value):
+        return float(default)
+    converted = pd.to_numeric(value, errors="coerce")
+    if pd.isna(converted):
+        return float(default)
+    return float(converted)
 
 
 def prepare_for_model(feature_dicts, scaler_path, feature_list=None, encoders=None):
     """Convert dictionaries to scaled and raw matrices."""
-    if feature_list is None: feature_list = MODEL_FEATURES
-    df = pd.DataFrame(feature_dicts)
-    
-    # ── 1. Categorical Encoding (on a copy for X) ────────────────────────
+    if feature_list is None:
+        feature_list = MODEL_FEATURES
+
+    prepared = compute_features(feature_dicts)
+    df = pd.DataFrame(prepared)
+
     X = df.reindex(columns=feature_list, fill_value=0)
-    
-    # Convert proto number to name for encoding
-    if 'proto' in X.columns:
-        proto_map = {'6': 'tcp', '17': 'udp', '1': 'icmp', '47': 'gre', '50': 'esp', '51': 'ah', '89': 'ospf', '132': 'sctp'}
-        X['proto'] = X['proto'].astype(str).map(lambda x: proto_map.get(x, x))
-    
+
     if encoders:
         for col, encoder in encoders.items():
-            if col in X.columns and col in ['proto', 'service', 'state']:
+            if col in X.columns and col in ["proto", "service", "state"]:
                 try:
-                    # Convert to string and match encoder's expected format
-                    X[col] = X[col].astype(str).str.upper()  # Encoder expects uppercase for state
-                    known = set(encoder.classes_)
-                    X[col] = X[col].apply(lambda x: x if x in known else encoder.classes_[0])
-                    X[col] = encoder.transform(X[col])
-                except Exception as e:
-                    logger.warning(f"Encoding failed for {col}: {e}. Filling with 0.")
+                    X[col] = X[col].apply(lambda value: _encode_category(value, encoder, col))
+                except Exception as exc:
+                    logger.warning("Encoding failed for %s: %s. Filling with 0.", col, exc)
                     X[col] = 0
 
     X = X.astype(float)
     X.replace([np.inf, -np.inf], 0, inplace=True)
     X.fillna(0, inplace=True)
 
-    X_raw = X.copy() # Store encoded but unscaled features
+    X_raw = X.copy()
 
-    if os.path.exists(scaler_path):
-        with open(scaler_path, "rb") as f: scaler = pickle.load(f)
-        X_scaled = scaler.transform(X.values)
-    else:
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X.values)
-        os.makedirs(os.path.dirname(scaler_path), exist_ok=True)
-        with open(scaler_path, "wb") as f: pickle.dump(scaler, f)
-            
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scaler file not found: {scaler_path}")
+
+    with open(scaler_path, "rb") as f:
+        scaler = pickle.load(f)
+    X_scaled = scaler.transform(X.values)
+
     meta_cols = [c for c in df.columns if c.startswith("_")]
-    df_meta = df[meta_cols].copy()
-    
+    df_meta = df[meta_cols].copy() if meta_cols else pd.DataFrame(index=df.index)
+
     return X_scaled, X_raw, df_meta
+
+
+def _encode_category(value: Any, encoder: Any, column: str) -> int:
+    """
+    Accept either raw category strings or values that are already label-encoded.
+    This keeps CSVs exported from the training pipeline from being collapsed into
+    the first encoder class.
+    """
+    classes = list(encoder.classes_)
+    proto_map = {
+        "1": "icmp",
+        "6": "tcp",
+        "17": "udp",
+        "47": "gre",
+        "50": "esp",
+        "51": "ah",
+        "89": "ospf",
+        "132": "sctp",
+    }
+
+    if pd.isna(value) or value == "":
+        return 0
+
+    text = str(value).strip()
+
+    numeric = pd.to_numeric(text, errors="coerce")
+    if not pd.isna(numeric) and float(numeric).is_integer():
+        encoded = int(numeric)
+        if column == "proto" and text in proto_map:
+            category = proto_map[text]
+            if category in classes:
+                return int(encoder.transform([category])[0])
+        if 0 <= encoded < len(classes):
+            return encoded
+
+    category = text.lower() if column in {"proto", "service"} else text.upper()
+    if category in classes:
+        return int(encoder.transform([category])[0])
+
+    logger.debug("Unknown %s category '%s'; using encoder fallback '%s'.", column, value, classes[0])
+    return 0

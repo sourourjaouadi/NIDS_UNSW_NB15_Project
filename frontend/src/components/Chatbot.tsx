@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, MessageSquare, Send, X } from "lucide-react";
+import { Bot, ClipboardCopy, MessageSquare, Send, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { starterConversation } from "../data/mockData";
+import { streamFlowChat } from "../api/csv";
 import { ChatMessage, FlowRecord } from "../types/nids";
 
 interface ChatbotProps {
@@ -15,81 +15,112 @@ const quickPrompts = [
   "What should I investigate next?"
 ];
 
-const buildReply = (prompt: string, flow: FlowRecord) => {
-  const normalized = prompt.toLowerCase();
-  const topFeature = flow.shapFeatures[0];
-  const secondFeature = flow.shapFeatures[1];
-  const hasShap = flow.shapFeatures.length > 0;
-
-  if (normalized.includes("why") || normalized.includes("flag")) {
-    if (!hasShap) {
-      return `${flow.id} was marked ${flow.prediction.toLowerCase()} based on the model risk score and extracted traffic profile. Detailed feature drivers are not available for this flow yet.`;
-    }
-    return `${flow.id} was marked ${flow.prediction.toLowerCase()} because ${topFeature.plainEnglish} ${
-      secondFeature ? secondFeature.plainEnglish : ""
-    }`.trim();
-  }
-
-  if (normalized.includes("shap") || normalized.includes("feature")) {
-    if (!hasShap) {
-      return `Detailed SHAP feature drivers are not available for ${flow.id} yet. The model still used extracted protocol, timing, and traffic-volume signals to compute the prediction.`;
-    }
-    return `The strongest model signals for ${flow.id} are ${flow.shapFeatures
-      .slice(0, 3)
-      .map((feature) => `${feature.name} (${feature.rawValue})`)
-      .join(", ")}. In plain language, the model is reacting to traffic shape, timing, and byte patterns that deviate from the baseline.`;
-  }
-
-  if (normalized.includes("investigate") || normalized.includes("next") || normalized.includes("suggest")) {
-    return flow.recommendations.join(" ");
-  }
-
-  if (flow.prediction === "Benign") {
-    return `${flow.id} looks benign with ${flow.confidence.toFixed(
-      1
-    )}% confidence. The traffic matches expected timing, TTL, and size patterns for routine network behavior.`;
-  }
-
-  return `${flow.id} is associated with ${flow.attackFamily}. The short version is: ${flow.summary}`;
+const initialMessage: ChatMessage = {
+  id: "assistant-initial",
+  role: "assistant",
+  content: "I've analyzed this alert. Ask me anything about it, or I can write a report paragraph."
 };
+
+const reportPrompt =
+  "Write a formal 3-sentence paragraph suitable for a security incident report describing this alert, the evidence, and the recommended action.";
 
 export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>(starterConversation);
+  const [messages, setMessages] = useState<ChatMessage[]>([initialMessage]);
   const [input, setInput] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const contextFlow = useMemo(
-    () => selectedFlow ?? flows.find((flow) => flow.prediction !== "Benign") ?? flows[0],
+    () => selectedFlow ?? flows.find((flow) => flow.prediction === "Attack") ?? flows[0],
     [flows, selectedFlow]
   );
+
+  useEffect(() => {
+    setMessages([initialMessage]);
+  }, [contextFlow?.backendFlowId, contextFlow?.sessionId]);
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isOpen]);
 
-  const submitPrompt = (prompt: string) => {
-    if (!prompt.trim() || !contextFlow) return;
+  const submitPrompt = async (prompt: string, copyWhenDone = false) => {
+    const text = prompt.trim();
+    if (!text || !contextFlow || isStreaming) return;
+
+    if (!contextFlow.sessionId || !contextFlow.backendFlowId) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content: "This flow is missing backend session metadata. Upload the CSV again, then select the flow and ask me about it."
+        }
+      ]);
+      return;
+    }
+
+    const history = messages
+      .filter((message) => message.id !== initialMessage.id)
+      .map(({ role, content }) => ({ role, content }));
 
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      content: prompt
+      content: text
     };
+    const assistantId = `assistant-${Date.now() + 1}`;
 
-    const assistantMessage: ChatMessage = {
-      id: `assistant-${Date.now() + 1}`,
-      role: "assistant",
-      content: buildReply(prompt, contextFlow)
-    };
-
-    setMessages((current) => [...current, userMessage, assistantMessage]);
+    setMessages((current) => [
+      ...current,
+      userMessage,
+      { id: assistantId, role: "assistant", content: "" }
+    ]);
     setInput("");
+    setIsStreaming(true);
+
+    try {
+      const responseText = await streamFlowChat(
+        contextFlow.sessionId,
+        contextFlow.backendFlowId,
+        text,
+        history,
+        (delta) => {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: `${message.content}${delta}` }
+                : message
+            )
+          );
+        }
+      );
+
+      if (copyWhenDone && responseText) {
+        await navigator.clipboard.writeText(responseText);
+      }
+    } catch (error) {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                content:
+                  error instanceof Error
+                    ? `Chat request failed: ${error.message}`
+                    : "Chat request failed."
+              }
+            : message
+        )
+      );
+    } finally {
+      setIsStreaming(false);
+    }
   };
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    submitPrompt(input);
+    void submitPrompt(input);
   };
 
   return (
@@ -101,7 +132,7 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 24 }}
             transition={{ duration: 0.25 }}
-            className="fixed bottom-24 right-4 z-50 flex h-[560px] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0B1320]/95 shadow-soft backdrop-blur-xl"
+            className="fixed bottom-24 right-4 z-50 flex h-[560px] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#0B1320]/95 shadow-soft backdrop-blur-xl"
           >
             <div className="flex items-start justify-between border-b border-white/8 px-5 py-4">
               <div className="flex items-center gap-3">
@@ -109,9 +140,9 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                   <Bot className="h-5 w-5 text-cyan-300" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-white">Flow Explainer</p>
+                  <p className="text-sm font-semibold text-white">SOC XAI Chatbot</p>
                   <p className="text-xs text-slate-400">
-                    Context: {contextFlow?.id} | {contextFlow?.prediction}
+                    Context: {contextFlow?.id ?? "No flow selected"} | {contextFlow?.prediction ?? "No data"}
                   </p>
                 </div>
               </div>
@@ -130,12 +161,22 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                   <button
                     key={prompt}
                     type="button"
-                    onClick={() => submitPrompt(prompt)}
-                    className="rounded-full border border-white/8 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-300/35 hover:text-cyan-200"
+                    onClick={() => void submitPrompt(prompt)}
+                    disabled={isStreaming || !contextFlow}
+                    className="rounded-full border border-white/8 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-300/35 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {prompt}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => void submitPrompt(reportPrompt, true)}
+                  disabled={isStreaming || !contextFlow}
+                  className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-300/45 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <ClipboardCopy className="h-3.5 w-3.5" />
+                  Copy as Report
+                </button>
               </div>
 
               {messages.map((message) => (
@@ -147,7 +188,7 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                       : "ml-auto bg-cyan-400 text-slate-950"
                   }`}
                 >
-                  {message.content}
+                  {message.content || (isStreaming && message.role === "assistant" ? "..." : "")}
                 </div>
               ))}
               <div ref={scrollAnchorRef} />
@@ -158,12 +199,13 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                 <input
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
-                  placeholder="Ask about the selected flow"
+                  placeholder="Ask about this alert..."
                   className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
                 />
                 <button
                   type="submit"
-                  className="rounded-full bg-cyan-400 p-2 text-slate-950 transition hover:bg-cyan-300"
+                  disabled={isStreaming || !input.trim()}
+                  className="rounded-full bg-cyan-400 p-2 text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label="Send message"
                 >
                   <Send className="h-4 w-4" />

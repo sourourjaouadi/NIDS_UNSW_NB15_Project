@@ -7,6 +7,15 @@ export interface ApiFeatureDriver {
   plain_english: string;
 }
 
+export interface ApiShapFeature {
+  feature: string;
+  shap_value: number;
+  abs_impact: number;
+  feature_value: string | number;
+  direction: "toward_attack" | "toward_normal";
+  semantic: string;
+}
+
 export interface ApiPrediction {
   flow_id: string;
   src_ip: string;
@@ -26,9 +35,11 @@ export interface ApiPrediction {
   summary: string;
   recommendations: string[];
   top_features: ApiFeatureDriver[];
+  shap_top_features?: ApiShapFeature[];
 }
 
 export interface ApiAnalysisResponse {
+  session_id?: string;
   source: string;
   generated_at: string;
   packet_count: number;
@@ -66,11 +77,11 @@ const readJson = async <T>(response: Response, fallback: string): Promise<T> => 
 };
 
 const normalizePrediction = (prediction: string): PredictionClass => {
-  if (prediction === "Benign" || prediction === "Malicious" || prediction === "Suspicious") {
-    return prediction;
+  if (prediction === "Normal" || prediction === "Benign") {
+    return "Normal";
   }
 
-  return "Suspicious";
+  return "Attack";
 };
 
 const buildFlowIdPrefix = (label: string) =>
@@ -100,6 +111,8 @@ export const mapAnalysisToFlows = (analysis: ApiAnalysisResponse, sourceLabel: s
 
     return {
       id: `${idPrefix}-${prediction.flow_id}-${index}`,
+      sessionId: analysis.session_id,
+      backendFlowId: prediction.flow_id,
       sourceIp: prediction.src_ip,
       destIp: prediction.dst_ip,
       protocol: prediction.proto.toUpperCase(),
@@ -114,7 +127,14 @@ export const mapAnalysisToFlows = (analysis: ApiAnalysisResponse, sourceLabel: s
       recommendations: prediction.recommendations,
       rawFeatures: rawFeaturesObj,
       scaledFeatures: scaledFeaturesObj,
-      shapFeatures: prediction.top_features.map((feature) => ({
+      shapFeatures: prediction.shap_top_features?.map((feature) => ({
+        name: feature.feature,
+        rawValue: String(feature.feature_value),
+        impact: Math.min(1, feature.abs_impact),
+        plainEnglish: feature.semantic,
+        shapValue: feature.shap_value,
+        direction: feature.direction
+      })) ?? prediction.top_features.map((feature) => ({
         name: feature.name,
         rawValue: feature.raw_value,
         impact: feature.impact,
@@ -165,3 +185,69 @@ export const uploadCsv = (file: File, onProgress?: (progress: number) => void) =
 
     request.send(formData);
   });
+
+export interface ChatHistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export const streamFlowChat = async (
+  sessionId: string,
+  flowId: string,
+  message: string,
+  history: ChatHistoryMessage[],
+  onDelta: (delta: string) => void
+) => {
+  const response = await fetch(buildApiUrl(`/chat/${sessionId}/${flowId}`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, history })
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => "");
+    let payload: unknown = null;
+
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+
+    const detail = extractErrorMessage(payload, text || "Failed to stream chat response.");
+    throw new Error(`HTTP ${response.status}: ${detail}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullText = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const event of events) {
+      const line = event.split("\n").find((item) => item.startsWith("data: "));
+      if (!line) continue;
+
+      const payload = JSON.parse(line.slice(6));
+      if (payload.done) {
+        return fullText;
+      }
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+      if (payload.text) {
+        fullText += payload.text;
+        onDelta(payload.text);
+      }
+    }
+  }
+
+  return fullText;
+};

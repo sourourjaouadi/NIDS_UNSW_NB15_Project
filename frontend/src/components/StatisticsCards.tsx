@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Activity, ShieldAlert, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Activity, ShieldAlert, ShieldCheck } from "lucide-react";
 import { FlowRecord } from "../types/nids";
 import { useCountUp } from "../hooks/useCountUp";
 
@@ -44,13 +44,12 @@ const StatCard = ({
 };
 
 export const StatisticsCards = ({ flows }: StatisticsCardsProps) => {
-  const malicious = flows.filter((flow) => flow.prediction === "Malicious").length;
-  const suspicious = flows.filter((flow) => flow.prediction === "Suspicious").length;
-  const benign = flows.filter((flow) => flow.prediction === "Benign").length;
+  const attacks = flows.filter((flow) => flow.prediction === "Attack").length;
+  const normal = flows.filter((flow) => flow.prediction === "Normal").length;
 
   return (
     <section className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3">
         <StatCard
           label="Total flows"
           value={flows.length}
@@ -59,22 +58,15 @@ export const StatisticsCards = ({ flows }: StatisticsCardsProps) => {
           accent="bg-cyan-400/15"
         />
         <StatCard
-          label="Malicious flows"
-          value={malicious}
-          helper="High-priority flows requiring immediate investigation."
+          label="Attack flows"
+          value={attacks}
+          helper="Flows classified as intrusions and passed to attack-family detection."
           icon={ShieldAlert}
           accent="bg-rose-500/15"
         />
         <StatCard
-          label="Suspicious flows"
-          value={suspicious}
-          helper="Borderline sessions worth additional analyst review."
-          icon={TriangleAlert}
-          accent="bg-amber-500/15"
-        />
-        <StatCard
-          label="Benign flows"
-          value={benign}
+          label="Normal flows"
+          value={normal}
           helper="Traffic aligned with the learned network baseline."
           icon={ShieldCheck}
           accent="bg-emerald-500/15"

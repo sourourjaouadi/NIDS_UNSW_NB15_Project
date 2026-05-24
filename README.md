@@ -129,4 +129,4 @@ npm install
 npm run dev
 ```
 
-The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:5000`, so the React app can upload PCAP files directly to the Flask backend during local development.
+The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:5000`, so the React app can upload CSV flow files directly to the Flask backend during local development.

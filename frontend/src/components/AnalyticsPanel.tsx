@@ -43,7 +43,7 @@ const normalizeAttackCategory = (value: string) => {
   return value || "Unknown";
 };
 
-const isAttackFlow = (flow: FlowRecord) => flow.prediction !== "Benign";
+const isAttackFlow = (flow: FlowRecord) => flow.prediction === "Attack";
 
 type ChartRef = { destroy: () => void } | null;
 
@@ -173,7 +173,7 @@ export const AnalyticsPanel = ({ flows }: AnalyticsPanelProps) => {
     }
 
     if (stackedCanvasRef.current && flows.length > 0) {
-      const normalCount = flows.filter((f) => f.prediction === "Benign").length;
+      const normalCount = flows.filter((f) => f.prediction === "Normal").length;
       const stackedLabels = ["Session"];
       const datasets = [
         {
@@ -290,7 +290,7 @@ export const AnalyticsPanel = ({ flows }: AnalyticsPanelProps) => {
             </div>
 
             <div className="rounded-2xl border border-white/8 bg-[#0B1320]/80 p-4">
-              <h3 className="text-sm font-semibold text-white">Top 10 Most Suspicious Flows</h3>
+              <h3 className="text-sm font-semibold text-white">Top 10 Attack Flows</h3>
               {attacks.length > 0 ? <canvas ref={top10CanvasRef} /> : <p className="mt-3 text-sm text-slate-400">No data available</p>}
             </div>
 

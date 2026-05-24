@@ -33,10 +33,10 @@ const Stat = ({
 );
 
 export const CumulativeDashboard = ({ flows, sessions, onClearHistory }: CumulativeDashboardProps) => {
-  const attackFlows = flows.filter((f) => f.prediction !== "Benign").length;
-  const benignFlows = flows.filter((f) => f.prediction === "Benign").length;
+  const attackFlows = flows.filter((f) => f.prediction === "Attack").length;
+  const normalFlows = flows.filter((f) => f.prediction === "Normal").length;
   const topAttack = flows
-    .filter((f) => f.prediction !== "Benign")
+    .filter((f) => f.prediction === "Attack")
     .reduce<Record<string, number>>((acc, flow) => {
       acc[flow.attackFamily] = (acc[flow.attackFamily] || 0) + 1;
       return acc;
@@ -69,7 +69,7 @@ export const CumulativeDashboard = ({ flows, sessions, onClearHistory }: Cumulat
           <Stat label="Sessions" value={sessions.length} icon={Database} />
           <Stat label="Total Flows" value={flows.length} icon={Sigma} />
           <Stat label="Attack Flows" value={attackFlows} icon={ShieldAlert} />
-          <Stat label="Benign Flows" value={benignFlows} icon={ShieldCheck} />
+          <Stat label="Normal Flows" value={normalFlows} icon={ShieldCheck} />
           <Stat label="Top Attack" value={topAttackLabel} icon={ShieldAlert} />
         </div>
       </div>
