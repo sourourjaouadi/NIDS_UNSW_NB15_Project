@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Copy, Info, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { FlowRecord } from "../types/nids";
 import { buildExplanation, formatBytes, formatDuration, formatTime, predictionStyles } from "../utils/format";
 
@@ -25,6 +25,7 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
   const [chatMessages, setChatMessages] = useState<DrawerChatMessage[]>([]);
   const [chatHistory, setChatHistory] = useState<Array<{ role: "assistant" | "user"; content: string }>>([]);
   const [chatInput, setChatInput] = useState("");
+  const [isChatStreaming, setIsChatStreaming] = useState(false);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
 
   const handleCopy = async () => {
@@ -73,12 +74,14 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
     };
 
     setChatMessages((current) => [...current, userMessage, assistantMessage]);
+    setIsChatStreaming(true);
 
     if (!sessionId || !flowId) {
       const message = "Chat context is unavailable for this flow because the backend session or flow ID is missing.";
       setChatMessages((current) =>
         current.map((item) => (item.id === assistantId ? { ...item, content: message, isStreaming: false } : item))
       );
+      setIsChatStreaming(false);
       return;
     }
 
@@ -148,8 +151,15 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
       setChatMessages((current) =>
         current.map((item) => (item.id === assistantId ? { ...item, content: message, isStreaming: false } : item))
       );
+    } finally {
+      setIsChatStreaming(false);
     }
   }
+
+  const handleChatSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    void sendChatMessage(flow?.sessionId, flow?.backendFlowId ?? flow?.id);
+  };
 
   useEffect(() => {
     if (!flow) return;
@@ -330,17 +340,11 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
                   Copy as Report
                 </button>
 
-                <div className="mt-3 flex gap-2">
+                <form onSubmit={handleChatSubmit} className="mt-3 flex gap-2 w-full">
                   <input
                     id="chat-input"
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void sendChatMessage(flow.sessionId, flow.backendFlowId ?? flow.id);
-                      }
-                    }}
                     placeholder="Ask about this alert..."
                     style={{
                       fontFamily: "var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
@@ -348,16 +352,17 @@ export const FlowDetailDrawer = ({ flow, onClose, onCopy }: FlowDetailDrawerProp
                       width: "100%"
                     }}
                     className="rounded-lg border border-white/10 bg-[#0B1320]/80 px-3 py-2 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-300/45"
+                    disabled={isChatStreaming}
                   />
                   <button
                     id="chat-send"
-                    type="button"
-                    onClick={() => void sendChatMessage(flow.sessionId, flow.backendFlowId ?? flow.id)}
-                    className="rounded-lg border border-cyan-400/20 bg-cyan-400 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-cyan-300"
+                    type="submit"
+                    disabled={!chatInput.trim() || isChatStreaming}
+                    className="rounded-lg border border-cyan-400/20 bg-cyan-400 px-4 py-2 text-xs font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Send
                   </button>
-                </div>
+                </form>
               </div>
 
               <div className="mt-8 rounded-[24px] border border-white/8 bg-white/5 p-5">

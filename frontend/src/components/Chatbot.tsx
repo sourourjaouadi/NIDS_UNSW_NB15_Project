@@ -46,15 +46,16 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
 
   const submitPrompt = async (prompt: string, copyWhenDone = false) => {
     const text = prompt.trim();
-    if (!text || !contextFlow || isStreaming) return;
+    if (!text || isStreaming) return;
 
-    if (!contextFlow.sessionId || !contextFlow.backendFlowId) {
+    if (!contextFlow || !contextFlow.sessionId || !contextFlow.backendFlowId) {
       setMessages((current) => [
         ...current,
         {
           id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: "This flow is missing backend session metadata. Upload the CSV again, then select the flow and ask me about it."
+          content:
+            "Chat is not available because the selected flow does not have backend session metadata. Upload the CSV again, then select the flow and ask me about it."
         }
       ]);
       return;
@@ -162,7 +163,7 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                     key={prompt}
                     type="button"
                     onClick={() => void submitPrompt(prompt)}
-                    disabled={isStreaming || !contextFlow}
+                    disabled={isStreaming || !contextFlow?.sessionId || !contextFlow?.backendFlowId}
                     className="rounded-full border border-white/8 bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-300/35 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {prompt}
@@ -171,7 +172,7 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                 <button
                   type="button"
                   onClick={() => void submitPrompt(reportPrompt, true)}
-                  disabled={isStreaming || !contextFlow}
+                  disabled={isStreaming || !contextFlow?.sessionId || !contextFlow?.backendFlowId}
                   className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:border-cyan-300/45 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <ClipboardCopy className="h-3.5 w-3.5" />
@@ -201,16 +202,22 @@ export const Chatbot = ({ flows, selectedFlow }: ChatbotProps) => {
                   onChange={(event) => setInput(event.target.value)}
                   placeholder="Ask about this alert..."
                   className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
+                  disabled={isStreaming || !contextFlow?.sessionId || !contextFlow?.backendFlowId}
                 />
                 <button
                   type="submit"
-                  disabled={isStreaming || !input.trim()}
+                  disabled={isStreaming || !input.trim() || !contextFlow?.sessionId || !contextFlow?.backendFlowId}
                   className="rounded-full bg-cyan-400 p-2 text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
                   aria-label="Send message"
                 >
                   <Send className="h-4 w-4" />
                 </button>
               </div>
+              {!contextFlow?.sessionId || !contextFlow?.backendFlowId ? (
+                <p className="mt-2 text-xs text-slate-500">
+                  Chat is unavailable until a flow with backend session metadata is selected.
+                </p>
+              ) : null}
             </form>
           </motion.div>
         )}
